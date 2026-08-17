@@ -1,0 +1,12 @@
+# Supabase CLI local state
+**/.temp/
+**/.env.local
+**/.branches/
+**/functions/**/.env
+
+# Local DB
+**/db/data/
+**/db/postgres-data/
+
+# Studio
+**/.studio/

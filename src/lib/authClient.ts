@@ -65,12 +65,13 @@ export async function resolveEmailForLogin(identifier: string): Promise<string> 
     body: JSON.stringify({ username: trimmed }),
   });
 
+  // Backend luôn trả 200 với { email: string | null } để chống username
+  // enumeration. Non-2xx chỉ khi infrastructure fail.
   if (!res.ok) {
-    // 404 (không tồn tại) hay 400 (invalid format) đều throw generic message.
     throw new Error('Sai thông tin đăng nhập');
   }
 
-  const data = (await res.json()) as { email?: string };
+  const data = (await res.json()) as { email?: string | null };
   if (!data.email) throw new Error('Sai thông tin đăng nhập');
   return data.email;
 }

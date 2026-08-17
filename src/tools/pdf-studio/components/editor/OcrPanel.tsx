@@ -14,8 +14,13 @@ import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { runOcr } from '../../lib/ocr-service';
 import type { OcrJobStatus } from '../../lib/ocr-service';
+import { createToolStorage } from '@/lib/plugin-storage';
 
-const PREF_KEY = 'pdf-studio-ocr-no-warn';
+const noWarnStorage = createToolStorage<boolean>({
+  toolId: 'pdf-studio',
+  key: 'ocr-no-warn',
+  scope: 'global',
+});
 
 interface OcrPanelProps {
   file: Blob;
@@ -46,7 +51,7 @@ export function OcrPanel({ file, filename, onOcrComplete, onCancel }: OcrPanelPr
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Check if user already dismissed warning
-  const noWarn = localStorage.getItem(PREF_KEY) === 'true';
+  const noWarn = noWarnStorage.get() === true;
 
   const startOcr = useCallback(async () => {
     setRunning(true);
@@ -96,7 +101,7 @@ export function OcrPanel({ file, filename, onOcrComplete, onCancel }: OcrPanelPr
 
   const handleConfirmWarning = useCallback(() => {
     if (dontAskAgain) {
-      localStorage.setItem(PREF_KEY, 'true');
+      noWarnStorage.set(true);
     }
     setShowWarning(false);
     startOcr();

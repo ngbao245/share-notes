@@ -26,6 +26,14 @@ import { useReaderStore, type PdfDocLike } from '@/stores/readerStore';
 import { clearBookContextCache } from '@/lib/rag/book-context';
 import { useRagStore } from '@/stores/ragStore';
 import { useModalStore } from '@/stores/modalStore';
+import { createToolStorage } from '@/lib/plugin-storage';
+
+// Facade storage instances — global scope (preference cross-user).
+const zoomStorage = createToolStorage<number>({ toolId: 'library', key: 'pdf-reader-zoom', scope: 'global' });
+const themeStorage = createToolStorage<string>({ toolId: 'library', key: 'pdf-reader-theme', scope: 'global' });
+const selectionMaskStorage = createToolStorage<SelectionMask>({ toolId: 'library', key: 'pdf-reader-selection-mask', scope: 'global' });
+const iosCalloutStorage = createToolStorage<boolean>({ toolId: 'library', key: 'pdf-reader-ios-callout', scope: 'global' });
+const showPageNavStorage = createToolStorage<boolean>({ toolId: 'library', key: 'pdf-reader-page-nav', scope: 'global' });
 
 interface SelectionState {
   text: string;
@@ -40,13 +48,8 @@ interface SelectionMask {
   enabled: boolean;
 }
 
-const SELECTION_MASK_KEY = 'reader_selection_mask';
-const DISABLE_IOS_CALLOUT_KEY = 'reader_disable_ios_callout';
-const SHOW_PAGE_NAV_KEY = 'reader_show_page_nav';
-
-const ZOOM_KEY = 'reader_pdf_zoom';
-const THEME_KEY = 'reader_pdf_theme';
-const SCROLL_POSITIONS_KEY_PREFIX = 'reader_scroll_positions_'; // sessionStorage key prefix, append book.id
+// Preference keys moved to facade (createToolStorage). Xem imports đầu file.
+const SCROLL_POSITIONS_KEY_PREFIX = 'reader_scroll_positions_'; // sessionStorage key prefix, append book.id — sessionStorage giữ nguyên, out of scope facade
 
 type ReaderTheme = 'light' | 'sepia' | 'dark';
 
@@ -100,11 +103,11 @@ export default function PdfReader({ book, initialPage }: { book: Book; initialPa
     total: number;
   } | null>(null);
   const [scale, setScale] = useState<number>(() => {
-    const v = localStorage.getItem(ZOOM_KEY);
-    return v ? Number(v) : 1.2;
+    const v = zoomStorage.get();
+    return typeof v === 'number' && Number.isFinite(v) ? v : 1.2;
   });
   const [theme, setTheme] = useState<ReaderTheme>(() => {
-    const v = localStorage.getItem(THEME_KEY);
+    const v = themeStorage.get();
     return v === 'sepia' || v === 'dark' || v === 'light' ? v : 'light';
   });
   const [error, setError] = useState<string | null>(null);
@@ -114,26 +117,17 @@ export default function PdfReader({ book, initialPage }: { book: Book; initialPa
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [toc, setToc] = useState<TocItem[]>([]);
   const [selectionMask, setSelectionMask] = useState<SelectionMask>(() => {
-    const stored = localStorage.getItem(SELECTION_MASK_KEY);
-    if (stored) {
-      try {
-        return JSON.parse(stored) as SelectionMask;
-      } catch {
-        // ignore
-      }
-    }
-    return { top: 5, bottom: 5, enabled: false };
+    return selectionMaskStorage.get() ?? { top: 5, bottom: 5, enabled: false };
   });
   const [showMaskBorders, setShowMaskBorders] = useState(false);
   const [mobilePageInputOpen, setMobilePageInputOpen] = useState(false);
   const [disableIosCallout, setDisableIosCallout] = useState<boolean>(() => {
-    const stored = localStorage.getItem(DISABLE_IOS_CALLOUT_KEY);
-    return stored === 'true';
+    return iosCalloutStorage.get() === true;
   });
   const [showPageNavButtons, setShowPageNavButtons] = useState<boolean>(() => {
-    const stored = localStorage.getItem(SHOW_PAGE_NAV_KEY);
+    const stored = showPageNavStorage.get();
     // Default: bật
-    return stored === null ? true : stored === 'true';
+    return stored === null ? true : stored === true;
   });
   // Ref mirror để dùng trong handler mà không phá deps của useCallback.
   const disableIosCalloutRef = useRef(disableIosCallout);
@@ -254,25 +248,11 @@ export default function PdfReader({ book, initialPage }: { book: Book; initialPa
     });
   }, [fileData, book.file_path]);
 
-  useEffect(() => {
-    localStorage.setItem(ZOOM_KEY, String(scale));
-  }, [scale]);
-
-  useEffect(() => {
-    localStorage.setItem(THEME_KEY, theme);
-  }, [theme]);
-
-  useEffect(() => {
-    localStorage.setItem(SELECTION_MASK_KEY, JSON.stringify(selectionMask));
-  }, [selectionMask]);
-
-  useEffect(() => {
-    localStorage.setItem(DISABLE_IOS_CALLOUT_KEY, String(disableIosCallout));
-  }, [disableIosCallout]);
-
-  useEffect(() => {
-    localStorage.setItem(SHOW_PAGE_NAV_KEY, String(showPageNavButtons));
-  }, [showPageNavButtons]);
+  useEffect(() => { zoomStorage.set(scale); }, [scale]);
+  useEffect(() => { themeStorage.set(theme); }, [theme]);
+  useEffect(() => { selectionMaskStorage.set(selectionMask); }, [selectionMask]);
+  useEffect(() => { iosCalloutStorage.set(disableIosCallout); }, [disableIosCallout]);
+  useEffect(() => { showPageNavStorage.set(showPageNavButtons); }, [showPageNavButtons]);
 
   const cycleTheme = useCallback(() => {
     setTheme((t) => THEME_ORDER[(THEME_ORDER.indexOf(t) + 1) % THEME_ORDER.length]);

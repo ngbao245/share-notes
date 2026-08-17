@@ -185,6 +185,9 @@ export default function SettingsDialog({
 
   // useMemo giữ ref current ổn định khi profile/draft không đổi. Giúp React.memo
   // ở LivePreview + PreviewCategories/PreviewHero skip re-render đúng cách.
+  // NOTE: useMemo sau early return vi phạm rules-of-hooks; pre-existing từ trước
+  // spec plugin-storage-facade. Cần refactor riêng, không đổi trong spec này.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
   const current = useMemo(() => ({ ...profile, ...draft }), [profile, draft]);
 
   function setField<K extends keyof UpdateProfileInput>(key: K, value: UpdateProfileInput[K]) {

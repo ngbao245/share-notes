@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import type { CanvasThemeMode } from '@/tools/json-studio/lib/types';
+import { createFacadeStorage } from '@/lib/plugin-storage/zustand-adapter';
+import { buildKey } from '@/lib/plugin-storage';
 
 // ============================================================
 // JSON Studio Preferences - persist localStorage
@@ -15,14 +17,14 @@ import type { CanvasThemeMode } from '@/tools/json-studio/lib/types';
 // đọc localStorage SYNC ngay khi module load, dùng làm default state.
 // Như vậy render đầu tiên đã có giá trị đúng, không bị Zustand rehydrate async sau.
 //
-// MIGRATION v1: rename từ tool 'json-viewer' sang 'json-studio'. Nếu key mới chưa có
-// nhưng key cũ (`bibo:json-viewer:prefs`) tồn tại → copy sang key mới, xoá key cũ.
-// Set flag `bibo:json-studio:migrated-v1` để tránh chạy lại.
+// MIGRATION v1 (json-viewer → json-studio): done via LEGACY_MAPPING trong facade
+// migration script (bibo:json-viewer:prefs + bibo:json-studio:prefs → v1:global:tool:json-studio:state).
+// Xem `src/lib/plugin-storage/migrate-legacy.ts`.
 // ============================================================
 
-const STORAGE_KEY = 'bibo:json-studio:prefs';
-const LEGACY_STORAGE_KEY = 'bibo:json-viewer:prefs';
-const MIGRATION_FLAG = 'bibo:json-studio:migrated-v1';
+// Facade key nơi zustand persist ghi state. Dùng cho `loadInitial()` sync read
+// và match key adapter build.
+const FACADE_KEY = buildKey({ toolId: 'json-studio', key: 'state', scope: 'global' });
 
 interface JsonStudioPrefsState {
   graphTheme: CanvasThemeMode;
@@ -45,34 +47,11 @@ const DEFAULTS: PersistedPrefs = {
   showRuler: true,
 };
 
-/**
- * Migrate legacy key `bibo:json-viewer:prefs` → `bibo:json-studio:prefs` 1 lần.
- * Guard bằng flag. Chỉ chạy nếu key mới chưa tồn tại (không overwrite user data).
- */
-function migrateLegacyPrefs(): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    if (localStorage.getItem(MIGRATION_FLAG)) return;
-    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
-    const current = localStorage.getItem(STORAGE_KEY);
-    if (legacy && !current) {
-      localStorage.setItem(STORAGE_KEY, legacy);
-    }
-    if (legacy) {
-      localStorage.removeItem(LEGACY_STORAGE_KEY);
-    }
-    localStorage.setItem(MIGRATION_FLAG, '1');
-  } catch {
-    // ignore — localStorage full / disabled → fallback default
-  }
-}
-
-/** Đọc sync localStorage để lấy giá trị đúng ngay từ render đầu. */
+/** Đọc sync localStorage tại FACADE_KEY để render đầu có giá trị đúng. */
 function loadInitial(): PersistedPrefs {
   if (typeof localStorage === 'undefined') return DEFAULTS;
-  migrateLegacyPrefs();
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(FACADE_KEY);
     if (!raw) return DEFAULTS;
     const parsed = JSON.parse(raw);
     // Zustand v4 persist format: { state: {...}, version: ... }
@@ -100,9 +79,12 @@ export const useJsonStudioPrefsStore = create<JsonStudioPrefsState>()(
       setShowRuler: (showRuler) => set({ showRuler }),
     }),
     {
-      name: STORAGE_KEY,
+      // Name ignored bởi facade adapter; facade build key từ toolId.
+      name: 'json-studio',
       version: 1,
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(() =>
+        createFacadeStorage({ toolId: 'json-studio', scope: 'global' }),
+      ),
       // BỎ auto-rehydrate vì đã load sync ở `loadInitial()`.
       // Persist vẫn auto-save khi setState (nhờ subscribe), nhưng không trigger
       // rehydrate async sau mount → không bao giờ flash từ default → persisted value.

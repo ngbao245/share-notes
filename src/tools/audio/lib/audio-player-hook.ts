@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { parseYouTubeId, fetchYouTubeTitle } from './parse-url';
+import { createToolStorage } from '@/lib/plugin-storage';
 
-const QUEUE_KEY = 'audio_player_queue';
-const STATE_KEY = 'audio_player_state';
+const queueStorage = createToolStorage<QueueItem[]>({
+  toolId: 'audio',
+  key: 'queue',
+  scope: 'user',
+});
+const stateStorage = createToolStorage<PersistedState & { autoRepeat?: boolean }>({
+  toolId: 'audio',
+  key: 'state',
+  scope: 'user',
+});
 
 export interface QueueItem {
   id: string;
@@ -35,38 +44,25 @@ const DEFAULT_STATE: PersistedState = {
 };
 
 function loadQueue(): QueueItem[] {
-  try {
-    const raw = localStorage.getItem(QUEUE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (x): x is QueueItem =>
-        !!x &&
-        typeof (x as QueueItem).id === 'string' &&
-        typeof (x as QueueItem).videoId === 'string',
-    );
-  } catch {
-    return [];
-  }
+  const parsed = queueStorage.get();
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(
+    (x): x is QueueItem =>
+      !!x &&
+      typeof (x as QueueItem).id === 'string' &&
+      typeof (x as QueueItem).videoId === 'string',
+  );
 }
 
 function loadState(): PersistedState {
-  try {
-    const raw = localStorage.getItem(STATE_KEY);
-    if (!raw) return DEFAULT_STATE;
-    const parsed = JSON.parse(raw) as Partial<PersistedState> & {
-      autoRepeat?: boolean;
-    };
-    // Migration v1 → v2: autoRepeat boolean → repeatMode enum
-    if (parsed.repeatMode === undefined && typeof parsed.autoRepeat === 'boolean') {
-      parsed.repeatMode = parsed.autoRepeat ? 'all' : 'off';
-    }
-    delete parsed.autoRepeat;
-    return { ...DEFAULT_STATE, ...parsed };
-  } catch {
-    return DEFAULT_STATE;
+  const parsed = stateStorage.get();
+  if (!parsed || typeof parsed !== 'object') return DEFAULT_STATE;
+  // Migration v1 → v2: autoRepeat boolean → repeatMode enum
+  if (parsed.repeatMode === undefined && typeof parsed.autoRepeat === 'boolean') {
+    parsed.repeatMode = parsed.autoRepeat ? 'all' : 'off';
   }
+  delete parsed.autoRepeat;
+  return { ...DEFAULT_STATE, ...parsed };
 }
 
 function uid(): string {
@@ -96,23 +92,15 @@ export function useAudioPlayer() {
 
   // Persist queue
   useEffect(() => {
-    try {
-      localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
-    } catch {
-      // Quota → ignore, queue vẫn dùng được in-memory
-    }
+    queueStorage.set(queue);
   }, [queue]);
 
-  // Persist state (debounce nhẹ qua microtask để batch các change liên tục)
+  // Persist state (debounce nhẹ để batch các change liên tục)
   const stateSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (stateSaveTimerRef.current) clearTimeout(stateSaveTimerRef.current);
     stateSaveTimerRef.current = setTimeout(() => {
-      try {
-        localStorage.setItem(STATE_KEY, JSON.stringify(state));
-      } catch {
-        // ignore
-      }
+      stateStorage.set(state);
     }, 300);
     return () => {
       if (stateSaveTimerRef.current) clearTimeout(stateSaveTimerRef.current);

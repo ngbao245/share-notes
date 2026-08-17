@@ -81,7 +81,7 @@ export function useUserInfo(userId: string) {
 **Solution**: Function ở B verify JWT + fetch profile qua Project A.
 
 ```ts
-// supabase/functions/reader-download/index.ts (deploy ở B)
+// supabase/workspace/functions/reader-download/index.ts (deploy ở B)
 const AUTH_URL = 'https://fghrcpfxgdfibascmase.supabase.co';
 const AUTH_SERVICE_KEY = Deno.env.get('PROJECT_A_SERVICE_KEY');
 
@@ -125,7 +125,7 @@ Deno.serve(async (req) => {
 **Setup ở Project B**:
 
 ```ts
-// supabase/functions/on-user-deleted/index.ts (deploy ở B)
+// supabase/workspace/functions/on-user-deleted/index.ts (deploy ở B)
 const WEBHOOK_SECRET = Deno.env.get('WEBHOOK_SECRET');
 
 Deno.serve(async (req) => {
@@ -229,4 +229,4 @@ Vấn đề chi phí thực sự: **quota storage/database size của mỗi proj
 ---
 
 **Last verified**: 2026-07-07  
-**Status**: Active — cập nhật khi thêm/xoá project hoặc đổi rule sync.
+**Status**: Active — cập nhật khi thêm/xoá project hoặc đổi rule sync.

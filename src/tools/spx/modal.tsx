@@ -1,8 +1,8 @@
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Search, ExternalLink, ArrowLeft, Trash2, Truck } from 'lucide-react';
 
-import { useLocalStorage } from '@/hooks/useLocalStorage';
+import { createToolStorage } from '@/lib/plugin-storage';
 
 import ToolModal from '@/components/ToolModal';
 import { Button } from '@/components/ui/button';
@@ -10,12 +10,17 @@ import { Input } from '@/components/ui/input';
 import { toast } from '@/components/ui/sonner';
 
 const SPX_BASE_URL = 'https://spx.vn/track?';
-const HISTORY_KEY = 'spx_tracking_history';
 
 interface HistoryItem {
   code: string;
   timestamp: string;
 }
+
+const historyStorage = createToolStorage<HistoryItem[]>({
+  toolId: 'spx',
+  key: 'tracking-history',
+  scope: 'user',
+});
 
 export default function Spx() {
   return (
@@ -26,8 +31,12 @@ export default function Spx() {
 }
 
 function Content() {
-  const [history, setHistory] = useLocalStorage<HistoryItem[]>(HISTORY_KEY, []);
+  const [history, setHistory] = useState<HistoryItem[]>(() => historyStorage.get() ?? []);
   const [activeCode, setActiveCode] = useState<string | null>(null);
+
+  useEffect(() => {
+    historyStorage.set(history);
+  }, [history]);
 
   function track(code: string) {
     const trimmed = code.trim();

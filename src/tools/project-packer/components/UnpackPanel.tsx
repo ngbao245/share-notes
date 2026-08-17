@@ -155,7 +155,6 @@ export default function UnpackPanel() {
             downloadBlob(blob, 'project-unpacked.zip');
             log(`✓ Đã download project-unpacked.zip với ${validFiles.length} file`, 'success');
             toast.success(`Đã giải nén ${validFiles.length} file`);
-            setTimeout(() => window.location.reload(), 2000);
         } catch (e) {
             log(`Lỗi: ${String(e)}`, 'error');
             toast.error('Giải nén thất bại');
@@ -165,96 +164,97 @@ export default function UnpackPanel() {
     }
 
     const charCount = text.length;
-    const partsHint =
+    const filesHint =
         text.match(/===FILE_START===/g)?.length ?? 0;
 
     return (
-        <div className="space-y-3">
-            {/* Input options */}
-            <div className="space-y-2">
-                <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                    Paste tất cả parts vào đây (parser tự ghép)
-                </label>
+        <div className="grid h-full gap-3 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+            {/* ===== Cột trái: Input ===== */}
+            <div className="flex flex-col border border-border bg-card">
+                {/* Header — chỉ stats */}
+                <div className="flex items-center border-b border-border bg-muted px-3 py-2">
+                    <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                        Paste text {charCount > 0 && (
+                            <span className="normal-case font-normal">
+                                — {charCount.toLocaleString('vi-VN')} ký tự
+                                {filesHint > 0 && ` · ${filesHint} file`}
+                            </span>
+                        )}
+                    </span>
+                </div>
+                {/* Textarea */}
                 <textarea
                     value={text}
                     onChange={(e) => setText(e.target.value)}
-                    placeholder={'\n===FILE_START===\nPATH: ...\n===FILE_END===\n'}
-                    className="block min-h-[200px] w-full resize-y border border-input bg-background p-3 font-mono text-xs focus:border-primary focus:outline-none"
+                    placeholder={'===FILE_START===\nPATH: src/App.tsx\nCONTENT_START:\n...\n===FILE_END==='}
+                    className="flex-1 resize-none bg-background p-3 font-mono text-xs focus:outline-none"
                 />
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>
-                        {charCount > 0 && (
-                            <>
-                                {charCount.toLocaleString('vi-VN')} ký tự
-                                {partsHint > 0 && ` · ${partsHint} part`}
-                            </>
+                {/* Footer — tất cả buttons bên phải */}
+                <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2">
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".txt,.bibopack"
+                        multiple
+                        className="hidden"
+                        onChange={handleFileUpload}
+                    />
+                    <input
+                        ref={zipInputRef}
+                        type="file"
+                        accept=".zip"
+                        className="hidden"
+                        onChange={handleZipUpload}
+                    />
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => zipInputRef.current?.click()}
+                        disabled={isProcessing}
+                        className="h-7 gap-1.5 px-2 text-xs"
+                    >
+                        <Archive className="h-3 w-3" />
+                        .zip
+                    </Button>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={isProcessing}
+                        className="h-7 gap-1.5 px-2 text-xs"
+                    >
+                        <Upload className="h-3 w-3" />
+                        .txt
+                    </Button>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={reset}
+                        disabled={isProcessing}
+                        className="h-7 gap-1.5 px-2 text-xs"
+                    >
+                        <RotateCcw className="h-3 w-3" />
+                    </Button>
+                    <Button
+                        size="sm"
+                        onClick={handleUnpack}
+                        disabled={isProcessing || !text.trim()}
+                        className="gap-1.5"
+                    >
+                        {isProcessing ? (
+                            <PackerLoadingSpinner size="sm" />
+                        ) : (
+                            <FileDown className="h-3 w-3" />
                         )}
-                    </span>
-
-                    <div className="flex gap-2">
-                        <input
-                            ref={fileInputRef}
-                            type="file"
-                            accept=".txt,.bibopack"
-                            multiple
-                            className="hidden"
-                            onChange={handleFileUpload}
-                        />
-                        <input
-                            ref={zipInputRef}
-                            type="file"
-                            accept=".zip"
-                            className="hidden"
-                            onChange={handleZipUpload}
-                        />
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => zipInputRef.current?.click()}
-                            disabled={isProcessing}
-                            className="h-7 gap-1.5 px-2 text-xs"
-                        >
-                            <Archive className="h-3 w-3" />
-                            Upload .zip
-                        </Button>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => fileInputRef.current?.click()}
-                            disabled={isProcessing}
-                            className="h-7 gap-1.5 px-2 text-xs"
-                        >
-                            <Upload className="h-3 w-3" />
-                            Upload .txt
-                        </Button>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={reset}
-                            disabled={isProcessing}
-                            className="h-7 gap-1.5 px-2 text-xs"
-                        >
-                            <RotateCcw className="h-3 w-3" />
-                            Reset
-                        </Button>
-                        <Button
-                            size="sm"
-                            onClick={handleUnpack}
-                            disabled={isProcessing || !text.trim()}
-                            className="h-7 gap-1.5 px-2 text-xs"
-                        >
-                            {isProcessing ? (
-                                <PackerLoadingSpinner size="sm" />
-                            ) : (
-                                <FileDown className="h-3 w-3" />
-                            )}
-                            {isProcessing ? 'Đang xử lý...' : 'Giải nén → ZIP'}
-                        </Button>
-                    </div>
+                        {isProcessing ? 'Đang xử lý...' : 'Giải nén → ZIP'}
+                    </Button>
                 </div>
             </div>
 
-            <TerminalLog logs={logs} />
+            {/* ===== Cột phải: Terminal Log (cùng height với trái) ===== */}
+            <div className="flex min-h-0 flex-col">
+                <TerminalLog logs={logs} className="flex flex-1 flex-col [&>div:last-child]:max-h-none [&>div:last-child]:flex-1" />
+            </div>
         </div>
     );
 }

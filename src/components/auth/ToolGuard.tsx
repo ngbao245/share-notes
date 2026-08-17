@@ -5,12 +5,15 @@
 // Wrap route content. Nếu tool không có trong profile.allowed_tools →
 // hiện empty state "Không có quyền", không render children.
 // Admin luôn pass.
+//
+// Logic delegate cho `checkPermission` trong core-sdk (single source).
 // ============================================================
 
 import { type ReactNode } from 'react';
 import { Lock } from 'lucide-react';
 
 import { useAuthStore } from '@/stores/authStore';
+import { checkPermission } from '@/lib/core-sdk/auth';
 import { EmptyState } from '@/components/shared';
 import { Button } from '@/components/ui/button';
 import { Link } from 'react-router-dom';
@@ -26,11 +29,7 @@ export default function ToolGuard({
 
   if (!profile) return null; // AuthGuard đã handle
 
-  const isAdmin = profile.role === 'admin';
-  const hasWildcard = profile.allowed_tools.includes('*');
-  const allowed = isAdmin || hasWildcard || profile.allowed_tools.includes(toolId);
-
-  if (!allowed) {
+  if (!checkPermission(toolId)) {
     return (
       <div className="flex h-full items-center justify-center p-6">
         <EmptyState
@@ -48,4 +47,4 @@ export default function ToolGuard({
   }
 
   return <>{children}</>;
-}
+}

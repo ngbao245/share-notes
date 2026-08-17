@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Package, RotateCcw, FolderOpen, ChevronRight, ChevronDown, File as FileIcon, Archive, Download } from 'lucide-react';
+import { Package, RotateCcw, FolderOpen, ChevronRight, ChevronDown, File as FileIcon, Archive, Download, Plus, X, Pencil, Search } from 'lucide-react';
 import { PackerLoadingSpinner } from './PackerLoadingSpinner';
 
 import { Button } from '@/components/ui/button';
@@ -7,11 +7,15 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/cn';
 import { toast } from '@/components/ui/sonner';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
+import { createToolStorage } from '@/lib/plugin-storage';
 
 import TerminalLog from './TerminalLog';
 import PartOutput from './PartOutput';
 import PackerOptions from './PackerOptions';
+import { FolderDiffToggle } from './FolderDiff';
+import ScriptGenerator from './ScriptGenerator';
 
+import { useSaveToSource } from '@/tools/project-packer/lib/useSaveToSource';
 import { isExcluded, isExtensionAllowed } from '@/tools/project-packer/lib/filter';
 import { PRESETS } from '@/tools/project-packer/lib/presets';
 import { readFiles, packFiles, LARGE_FILE_WHITELIST } from '@/tools/project-packer/lib/pack';
@@ -30,7 +34,7 @@ import type { LogEntry, PackOptions, PackPart } from '@/tools/project-packer/lib
 // Persist (cứu khi crash):
 // - Options: localStorage 'packer.options'
 // - Selection paths: localStorage 'packer.selectedPaths'
-//   → user mở folder lß║íi, app tự restore tick từ paths cũ.
+//   → user mở folder lại, app tự restore tick từ paths cũ.
 // ============================================================
 
 const REACT_PRESET = PRESETS[0];
@@ -41,7 +45,36 @@ const DEFAULT_OPTIONS: PackOptions = {
 };
 
 const LS_OPTIONS = 'packer.options';
-const LS_SELECTED_PATHS = 'packer.selectedPaths';
+
+// User-scope: chọn paths là data per user (nhiều user share máy, chọn khác nhau).
+// `packer.options` (include/exclude patterns preset) vẫn dùng useLocalStorage hook —
+// out of scope migration này vì key này không có trong LEGACY_MAPPING và có nhiều
+// consumer khác của hook. Refactor sau khi migrate toàn bộ hook consumers.
+const selectedPathsStorage = createToolStorage<string[]>({
+  toolId: 'project-packer',
+  key: 'selected-paths',
+  scope: 'user',
+});
+
+// Persist folder labels — mapping fingerprint → label.
+// Fingerprint = SHA-256 của sorted paths join. Khi user re-upload cùng folder,
+// tự động restore label đã đặt trước đó.
+const folderLabelsStorage = createToolStorage<Record<string, string>>({
+  toolId: 'project-packer',
+  key: 'folder-labels',
+  scope: 'user',
+});
+
+async function computeFolderFingerprint(paths: string[]): Promise<string> {
+  const sorted = [...paths].sort();
+  const text = sorted.join('\n');
+  const bytes = new TextEncoder().encode(text);
+  const hash = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(hash))
+    .slice(0, 8) // 16 hex chars, đủ unique cho use case này
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
 
 const HIDDEN_FOLDERS = new Set([
   'node_modules', '.git', 'dist', 'build', '.next', '.vite',
@@ -50,7 +83,7 @@ const HIDDEN_FOLDERS = new Set([
 
 // ============================================================
 // Drag-drop traverse — skip HIDDEN_FOLDERS NGAY tại folder entry
-// (tận dụng webkitGetAsEntry — KH├öNG scan node_modules)
+// (tận dụng webkitGetAsEntry — KHÔNG scan node_modules)
 // ============================================================
 async function traverseEntry(
   entry: FileSystemEntry,
@@ -91,7 +124,7 @@ async function traverseEntry(
 // Tree types
 // ============================================================
 interface TreeNode {
-  name: string;          // t├¬n file/folder
+  name: string;          // tên file/folder
   path: string;          // full path từ root
   isFolder: boolean;
   children: TreeNode[];  // chỉ folder mới có children
@@ -102,9 +135,9 @@ interface TreeNode {
 /**
  * Selection store — Set<string> + per-path subscriptions.
  *
- * Lừ do KH├öNG dùng React state cho selectedPaths:
+ * Lừ do KHÔNG dùng React state cho selectedPaths:
  *   - Mỗi tick → setState → re-render TOÀN BỘ tree (5000 row).
- *   - Mỗi folder phải re-compute count = O(descendants) ├ù O(folders) = O(n²).
+ *   - Mỗi folder phải re-compute count = O(descendants) × O(folders) = O(n²).
  *
  * Cách dùng: row subscribe vào path của mình, chỉ row đó re-render.
  * Folder count vẫn là O(descendants) NHƯNG chỉ chạy khi count đổi
@@ -132,7 +165,7 @@ class SelectionStore {
     return this.set.size;
   }
 
-  /** Toggle nhiều path 1 lần, fire chỉ nhß╗»ng path đổi. */
+  /** Toggle nhiều path 1 lần, fire chỉ những path đổi. */
   toggle(paths: string[], checked: boolean) {
     const changed: string[] = [];
     for (const p of paths) {
@@ -197,6 +230,28 @@ class SelectionStore {
 
 const SelectionContext = createContext<SelectionStore | null>(null);
 
+/**
+ * VisibilityContext — null = show all, Set = chỉ show paths trong set.
+ * Dùng cho search filter mà không cần rebuild tree.
+ */
+const VisibilityContext = createContext<Set<string> | null>(null);
+
+/**
+ * SlotColorMap — mapping folder label → colorIndex cho tree root nodes.
+ */
+const SlotColorMapContext = createContext<Map<string, number>>(new Map());
+
+/**
+ * HighlightedLabelContext — label hiện đang highlight (click slot).
+ */
+const HighlightedLabelContext = createContext<string | null>(null);
+
+/**
+ * TreeExpandAllContext — null = mỗi node tự quyết, true = force expand all, false = force collapse all.
+ * Reset về null khi user thao tác manual (click 1 folder).
+ */
+const TreeExpandAllContext = createContext<{ value: boolean | null; reset: () => void }>({ value: null, reset: () => {} });
+
 /** Hook: subscribe checked status của 1 path — chỉ row đó re-render khi đổi */
 function useIsSelected(path: string): boolean {
   const store = useContext(SelectionContext);
@@ -222,19 +277,6 @@ function useFolderCount(allDescendants: string[]): { checked: number; total: num
   }, [allDescendants, store]);
   const checked = useSyncExternalStore(subscribe, getSnapshot);
   return { checked, total: allDescendants.length };
-}
-
-/**
- * Restore selection từ paths cũ:
- *   - Cố overlap với paths mới → giữ overlap
- *   - Không overlap → select all (lần đầu hoặc folder khác hoàn toàn)
- */
-function restoreSelection(currentPaths: string[], previousPaths: string[]): string[] {
-  if (previousPaths.length === 0) return currentPaths;
-  const prev = new Set(previousPaths);
-  const intersect = currentPaths.filter((p) => prev.has(p));
-  if (intersect.length === 0) return currentPaths;
-  return intersect;
 }
 
 async function buildTree(paths: string[]): Promise<TreeNode> {
@@ -301,11 +343,55 @@ async function buildTree(paths: string[]): Promise<TreeNode> {
 }
 
 // ============================================================
+// FolderSlot — mỗi folder user upload là 1 slot trong queue
+// ============================================================
+interface FolderSlot {
+  id: string;
+  label: string; // mặc định = folder-name (HH:mm:ss), user rename
+  files: { file: File; path: string }[]; // relative paths bên trong folder
+  fileCount: number;
+  fingerprint?: string; // SHA-256 hash của sorted paths, để persist label
+  colorIndex: number; // index vào SLOT_COLORS palette
+}
+
+// Palette 8 màu nhẹ, đủ phân biệt trên cả light/dark theme.
+// Dùng Tailwind arbitrary values vì đây là data color, không phải theme token.
+const SLOT_COLORS = [
+  { dot: 'bg-blue-500', border: 'border-l-blue-500', text: 'text-blue-500' },
+  { dot: 'bg-emerald-500', border: 'border-l-emerald-500', text: 'text-emerald-500' },
+  { dot: 'bg-amber-500', border: 'border-l-amber-500', text: 'text-amber-500' },
+  { dot: 'bg-purple-500', border: 'border-l-purple-500', text: 'text-purple-500' },
+  { dot: 'bg-rose-500', border: 'border-l-rose-500', text: 'text-rose-500' },
+  { dot: 'bg-cyan-500', border: 'border-l-cyan-500', text: 'text-cyan-500' },
+  { dot: 'bg-orange-500', border: 'border-l-orange-500', text: 'text-orange-500' },
+  { dot: 'bg-indigo-500', border: 'border-l-indigo-500', text: 'text-indigo-500' },
+] as const;
+
+let slotColorCounter = 0;
+
+let slotIdCounter = 0;
+function nextSlotId(): string {
+  return `slot_${++slotIdCounter}_${Date.now()}`;
+}
+
+function defaultLabel(folderName?: string): string {
+  const now = new Date();
+  const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+  return folderName ? `${folderName} (${time})` : time;
+}
+
+function formatKb(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)}MB`;
+}
+
+// ============================================================
 // PackPanel
 // ============================================================
 export default function PackPanel() {
-  // File objects giữ trong ref — KHÔNG vào state
-  const filesRef = useRef<{ file: File; path: string }[]>([]);
+  // Multi-folder queue — mỗi slot = 1 folder user upload
+  const [folderQueue, setFolderQueue] = useState<FolderSlot[]>([]);
 
   // State chỉ chứa data nhẹ
   const [tree, setTree] = useState<TreeNode | null>(null);
@@ -313,35 +399,20 @@ export default function PackPanel() {
   // Selection store — không qua React state để tránh re-render toàn cây.
   // Persist qua localStorage: load 1 lần lúc mount, save khi store đổi.
   const selectionStore = useMemo(() => {
-    let initial: string[] = [];
-    try {
-      const raw = localStorage.getItem(LS_SELECTED_PATHS);
-      if (raw) initial = JSON.parse(raw);
-    } catch { /* ignore */ }
+    const initial = selectedPathsStorage.get();
     return new SelectionStore(Array.isArray(initial) ? initial : []);
   }, []);
 
-  // Persist khi store đổi (debounce 200ms để không spam localStorage khi tick nhanh)
+  // Persist khi store đổi (debounce 200ms để không spam facade khi tick nhanh)
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     return selectionStore.subscribeAll(() => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        try {
-          localStorage.setItem(
-            LS_SELECTED_PATHS,
-            JSON.stringify(selectionStore.getAll()),
-          );
-        } catch { /* ignore */ }
+        selectedPathsStorage.set(selectionStore.getAll());
       }, 200);
     });
   }, [selectionStore]);
-
-  // Subscribe summary count cho footer
-  const totalSelected = useSyncExternalStore(
-    useCallback((cb) => selectionStore.subscribeAll(cb), [selectionStore]),
-    useCallback(() => selectionStore.size(), [selectionStore]),
-  );
 
   // Options persist sang localStorage
   const [options, setOptions] = useLocalStorage<PackOptions>(
@@ -354,22 +425,26 @@ export default function PackPanel() {
   const [parts, setParts] = useState<PackPart[]>([]);
   // Loading indicator cho các thao tác nặng (scan, toggle, zip)
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
-  // Save-to-source state — persist qua các lần click để resume phần fail.
-  // packId dùng chung giữa lần đầu + lần retry → không tạo dupe khi user click "Lưu tiếp".
-  const [saveState, setSaveState] = useState<{
-    isSaving: boolean;
-    packId: string | null;
-    savedIndices: number[]; // dùng array cho stable identity (Set g├óy re-render infinite)
-    failedIndices: number[];
-    saved: number;
-    total: number;
-  }>({ isSaving: false, packId: null, savedIndices: [], failedIndices: [], saved: 0, total: 0 });
+  // Search filter query cho tree
+  const [searchQuery, setSearchQuery] = useState('');
+  // Highlight: khi click slot trong queue → flash highlight folder tương ứng trong tree
+  const [highlightedLabel, setHighlightedLabel] = useState<string | null>(null);
+  // Global expand/collapse override — null = mỗi folder tự quyết, true = expand all, false = collapse all
+  const [treeExpandAll, setTreeExpandAll] = useState<boolean | null>(true);
   const logIdRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
+  const packAbortRef = useRef<AbortController | null>(null);
 
   // Progress hiển thị (smooth animated). Khác với `progress.current` là raw value.
   const [displayProgress, setDisplayProgress] = useState(0);
+
+  // Auto-clear highlight sau 2s
+  useEffect(() => {
+    if (!highlightedLabel) return;
+    const timer = setTimeout(() => setHighlightedLabel(null), 2000);
+    return () => clearTimeout(timer);
+  }, [highlightedLabel]);
 
   // Tween displayProgress về `progress.current` mỗi animation frame
   useEffect(() => {
@@ -399,14 +474,19 @@ export default function PackPanel() {
     ]);
   }
 
+  // Save-to-source hook (extracted business logic)
+  const { saveState, saveToSource, resetSaveState } = useSaveToSource({ log });
+
   function reset() {
-    filesRef.current = [];
+    packAbortRef.current?.abort();
+    packAbortRef.current = null;
+    setFolderQueue([]);
     setTree(null);
     selectionStore.clear();
     setLogs([]);
     setParts([]);
     setIsPacking(false);
-    setSaveState({ isSaving: false, packId: null, savedIndices: [], failedIndices: [], saved: 0, total: 0 });
+    resetSaveState();
     if (inputRef.current) inputRef.current.value = '';
   }
 
@@ -439,20 +519,15 @@ export default function PackPanel() {
 
       downloadBlob(blob, 'project-packed.zip');
       toast.success(`Đã tải ZIP (${(blob.size / 1024).toFixed(1)} KB)`);
-      // Hiển thị thông báo reload, sau 1.5s reload page
-      setBusyMessage('Đã tải xong. Đang reload để clear cache...');
-      setTimeout(() => {
-        window.location.reload();
-      }, 1500);
-      return; // KHÔNG vào finally để giữ busyMessage tß╗¢i khi reload
     } catch (e) {
       toast.error('Không tạo được ZIP');
-      log(`Lß╗ùi tạo ZIP: ${String(e)}`, 'error');
+      log(`Lỗi tạo ZIP: ${String(e)}`, 'error');
+    } finally {
       setBusyMessage(null);
     }
   }
 
-  // Download mß╗ùi part thănh file .txt ri├¬ng (loop downloadBlob)
+  // Download mỗi part thành file .txt riêng (loop downloadBlob)
   function handleDownloadAllAsTxt(parts: PackPart[]) {
     const padLen = String(parts.length).length;
     for (const part of parts) {
@@ -464,215 +539,119 @@ export default function PackPanel() {
       downloadBlob(blob, filename);
     }
     toast.success(`Đã tải ${parts.length} file .txt`);
-    setBusyMessage('Đã tải xong. Đang reload để clear cache...');
-    setTimeout(() => window.location.reload(), 1500);
   }
 
   // ============================================================
-  // Lưu tất cả parts vào Source (mß╗ùi part = 1 source ri├¬ng)
-  //
-  // Idempotency:
-  //  - packId + partIndex là identity duy nhất, tag lưu trong `tags` field.
-  //  - Tr╞░ß╗¢c khi retry (attempt >= 1), verify với server: GET /notes → filter
-  //    theo pack-id → parse part index từ tag "part:N/M" → mark nhß╗»ng part
-  //    đã có trênn server là saved. Xß╗¡ lừ case AbortError-nh╞░ng-server-đã-tạo
-  //    (timeout 45s vẫn có thể xß║úy ra với MockAPI free tier).
-  //
-  // Resume:
-  //  - Khi user click lần 2 mà saveState c├▓n failedIndices → reuse packId cũ,
-  //    chỉ POST index ch╞░a done. Không tạo pack mới.
-  //  - Khi hoàn thănh 100% → set failedIndices=[] để lần click sau (nếu có
-  //    parts mới) lß║íi là save mới.
-  //
-  // Timeout: 45s (MockAPI free tier P99 latency ~20-30s).
+  // Folder queue management
   // ============================================================
-  async function handleSaveToSource(parts: PackPart[]) {
-    if (parts.length === 0 || saveState.isSaving) return;
-
-    const { fetchJson } = await import('@/api/client');
-    const { API } = await import('@/lib/config');
-    const now = new Date().toISOString();
-
-    // Resume: nếu có packId + savedIndices từ lần trước cho cùng bộ parts
-    //         (số l╞░ß╗úng part khß╗¢p) → chỉ save phần thiß║┐u.
-    const isResume =
-      saveState.packId !== null &&
-      saveState.total === parts.length &&
-      saveState.failedIndices.length > 0;
-
-    const packId = isResume
-      ? saveState.packId!
-      : `pack_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-    const baseTitle = `Project Packed - ${new Date().toLocaleString('vi-VN')}`;
-
-    const savedSet = new Set<number>(isResume ? saveState.savedIndices : []);
-    let pendingIndices: number[] = isResume
-      ? [...saveState.failedIndices]
-      : parts.map((_, i) => i);
-
-    setSaveState({
-      isSaving: true,
-      packId,
-      savedIndices: [...savedSet],
-      failedIndices: [],
-      saved: savedSet.size,
-      total: parts.length,
-    });
-
-    if (isResume) {
-      log(`Resume lưu Source: c├▓n ${pendingIndices.length}/${parts.length} part`, 'info');
-    } else {
-      log(`Bß║»t đầu lưu ${parts.length} part vào Source...`);
-    }
-
-    const TIMEOUT_MS = 45_000;
-    const MAX_RETRIES = 2;
-
-    // Helper: verify với server nhß╗»ng index năo thß╗▒c sß╗▒ đã lưu (dedupe).
-    async function verifyServer(): Promise<void> {
-      try {
-        const raw = await fetchJson<unknown[]>(API.NOTES);
-        const foundIndices = new Set<number>();
-        for (const item of Array.isArray(raw) ? raw : []) {
-          const tags =
-            item && typeof item === 'object' && 'tags' in item
-              ? (item as { tags?: unknown }).tags
-              : null;
-          if (typeof tags !== 'string') continue;
-          if (!tags.includes(`pack-id:${packId}`)) continue;
-          const m = tags.match(/part:(\d+)\//);
-          if (m) foundIndices.add(parseInt(m[1], 10) - 1);
-        }
-        // Merge vào savedSet
-        let newlyFound = 0;
-        for (const idx of foundIndices) {
-          if (!savedSet.has(idx)) {
-            savedSet.add(idx);
-            newlyFound++;
-          }
-        }
-        if (newlyFound > 0) {
-          log(`Verify server: ${newlyFound} part thß╗▒c ra đã lưu (skip dupe)`, 'info');
-        }
-        pendingIndices = pendingIndices.filter((i) => !savedSet.has(i));
-        setSaveState((s) => ({
-          ...s,
-          savedIndices: [...savedSet],
-          saved: savedSet.size,
-        }));
-      } catch (e) {
-        log(`Verify server fail: ${String(e)} — vẫn retry b├¼nh thưß╗¥ng`, 'warning');
-      }
-    }
-
-    // Nß║┐u resume: verify trước để tận dụng thêm nhß╗»ng part đã lưu ngß║ºm
-    // (case user F5 giữa chß╗½ng, hoặc pass đầu bß╗ï timeout nh╞░ng server nhận).
-    if (isResume) {
-      await verifyServer();
-    }
-
+  async function addFolderSlot(files: { file: File; path: string }[], folderName?: string): Promise<FolderSlot> {
+    // Compute fingerprint → restore label nếu folder này đã upload trước đó
+    const paths = files.map((f) => f.path);
+    let fingerprint: string | undefined;
+    let restoredLabel: string | null = null;
     try {
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        if (pendingIndices.length === 0) break;
-
-        if (attempt > 0) {
-          log(`Retry lần ${attempt}: ${pendingIndices.length} part ch╞░a lưu được...`, 'warning');
-          // Verify trước retry: có thể part fail lần trước là AbortError nh╞░ng
-          // server thß╗▒c sß╗▒ đã tạo → không cần POST lß║íi.
-          await verifyServer();
-          if (pendingIndices.length === 0) break;
-          await new Promise((r) => setTimeout(r, 2000));
-        }
-
-        const stillFailed: number[] = [];
-
-        for (const i of pendingIndices) {
-          const part = parts[i];
-          try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-            await fetchJson(API.NOTES, {
-              method: 'POST',
-              signal: controller.signal,
-              body: JSON.stringify({
-                type: 'source',
-                title: parts.length === 1 ? baseTitle : `${baseTitle} (${i + 1}/${parts.length})`,
-                content: part.content,
-                tags: `packed, pack-id:${packId}, part:${i + 1}/${parts.length}, ${selectedFileCount} files`,
-                source: 'project-packer',
-                createdAt: now,
-                updatedAt: now,
-              }),
-            });
-            clearTimeout(timeout);
-            savedSet.add(i);
-            log(`Γ£ô Đã lưu part ${i + 1}/${parts.length}`, 'success');
-            setSaveState((s) => ({
-              ...s,
-              savedIndices: [...savedSet],
-              saved: savedSet.size,
-            }));
-          } catch (e) {
-            stillFailed.push(i);
-            if (attempt === MAX_RETRIES) {
-              log(`Γ£ù Part ${i + 1} fail sau ${MAX_RETRIES + 1} lần: ${String(e)}`, 'error');
-            }
-          }
-
-          // Delay 300ms giữa mß╗ùi request (MockAPI rate limit ~100 req/min)
-          await new Promise((r) => setTimeout(r, 300));
-        }
-
-        pendingIndices = stillFailed;
+      fingerprint = await computeFolderFingerprint(paths);
+      const saved = folderLabelsStorage.get();
+      if (saved && typeof saved === 'object' && fingerprint in saved) {
+        restoredLabel = saved[fingerprint];
       }
-
-      // Verify lần cuß╗æi trước khi báo fail — bß║»t case last-attempt cũng abort
-      // nh╞░ng server đã tạo.
-      if (pendingIndices.length > 0) {
-        await verifyServer();
-      }
-
-      const successCount = savedSet.size;
-      const finalFailed = pendingIndices;
-
-      setSaveState({
-        isSaving: false,
-        packId,
-        savedIndices: [...savedSet],
-        failedIndices: finalFailed,
-        saved: successCount,
-        total: parts.length,
-      });
-
-      if (successCount === parts.length) {
-        log(`Γ£ô Hoăn tất! Đã lưu ${parts.length} part vào Source`, 'success');
-        toast.success(`Đã lưu ${parts.length} part vào Source. Văo trang Sources để download.`);
-      } else if (successCount > 0) {
-        const missingParts = finalFailed.map((i) => i + 1).join(',');
-        log(`ΓÜá Lưu ${successCount}/${parts.length} part. Thiß║┐u part: ${missingParts}`, 'warning');
-        toast.warning(
-          `Lưu ${successCount}/${parts.length} part. Click "Lưu tiếp ${finalFailed.length} part c├▓n thiß║┐u" để retry.`,
-        );
-      } else {
-        log(`Γ£ù Không lưu được part năo`, 'error');
-        toast.error('Không lưu được vào Source. Kiß╗âm tra kết nß╗æi mß║íng.');
-      }
-    } catch (e) {
-      setSaveState((s) => ({
-        ...s,
-        isSaving: false,
-        savedIndices: [...savedSet],
-        failedIndices: pendingIndices,
-        saved: savedSet.size,
-      }));
-      toast.error('Không lưu được vào Source');
-      log(`Lß╗ùi save to source: ${String(e)}`, 'error');
+    } catch {
+      // crypto.subtle không có → skip restore
     }
+
+    const baseLabel = restoredLabel ?? defaultLabel(folderName);
+    // Dedupe: nếu queue đã có folder cùng label → suffix "-2", "-3"...
+    let label = baseLabel;
+    const existingLabels = new Set(folderQueue.map((s) => s.label));
+    if (existingLabels.has(label)) {
+      let suffix = 2;
+      while (existingLabels.has(`${baseLabel}-${suffix}`)) suffix++;
+      label = `${baseLabel}-${suffix}`;
+    }
+    const slot: FolderSlot = {
+      id: nextSlotId(),
+      label,
+      files,
+      fileCount: files.length,
+      fingerprint,
+      colorIndex: slotColorCounter++ % SLOT_COLORS.length,
+    };
+    setFolderQueue((q) => [...q, slot]);
+    return slot;
   }
 
+  function removeFolderSlot(slotId: string) {
+    setFolderQueue((q) => q.filter((s) => s.id !== slotId));
+  }
+
+  function renameFolderSlot(slotId: string, newLabel: string) {
+    setFolderQueue((q) => {
+      const existingLabels = new Set(q.filter((s) => s.id !== slotId).map((s) => s.label));
+      let label = newLabel;
+      if (existingLabels.has(label)) {
+        let suffix = 2;
+        while (existingLabels.has(`${label}-${suffix}`)) suffix++;
+        label = `${label}-${suffix}`;
+      }
+      // Persist label theo fingerprint (nếu có) để lần sau upload tự restore
+      const target = q.find((s) => s.id === slotId);
+      if (target?.fingerprint) {
+        const saved = folderLabelsStorage.get();
+        const map = saved && typeof saved === 'object' ? { ...saved } : {};
+        map[target.fingerprint] = label;
+        folderLabelsStorage.set(map);
+      }
+      return q.map((s) => s.id === slotId ? { ...s, label } : s);
+    });
+  }
+
+  // Rebuild tree khi queue thay đổi
+  useEffect(() => {
+    if (folderQueue.length === 0) {
+      setTree(null);
+      selectionStore.clear();
+      return;
+    }
+    // Build merged paths (prefix = slot.label)
+    let cancelled = false;
+    (async () => {
+      const allPaths: string[] = [];
+      for (const slot of folderQueue) {
+        for (const f of slot.files) {
+          allPaths.push(`${slot.label}/${f.path}`);
+        }
+      }
+      const newTree = await buildTree(allPaths);
+      if (cancelled) return;
+      setTree(newTree);
+      // Auto-select: keep currently selected paths + add new paths as selected
+      await new Promise((r) => setTimeout(r, 0));
+      if (cancelled) return;
+      const previousPaths = new Set(selectionStore.getAll());
+      // New paths = paths in allPaths that weren't in previous selection
+      // Strategy: keep old selection that still exists + auto-select new paths
+      const result: string[] = [];
+      for (const p of allPaths) {
+        if (previousPaths.has(p)) {
+          // Path existed before and was selected → keep selected
+          result.push(p);
+        } else if (!previousPaths.size) {
+          // First load (nothing selected yet) → select all
+          result.push(p);
+        } else {
+          // New path (new folder added) → auto-select
+          result.push(p);
+        }
+      }
+      selectionStore.replace(result);
+      setParts([]);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folderQueue]);
+
   // ============================================================
-  // Folder input — scan t├¬n, build tree, KH├öNG đọc content
+  // Folder input — scan tên, build tree, KHÔNG đọc content
   // ============================================================
   async function handleFolderInput(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
@@ -681,8 +660,7 @@ export default function PackPanel() {
       return;
     }
 
-    setBusyMessage(`Đang xß╗¡ lừ ${files.length.toLocaleString('vi-VN')} file...`);
-    // Yield để UI render busy message trước khi block
+    setBusyMessage(`Đang xử lý ${files.length.toLocaleString('vi-VN')} file...`);
     await new Promise((r) => setTimeout(r, 0));
 
     // Filter hidden folders
@@ -693,88 +671,78 @@ export default function PackPanel() {
         return !parts.some((p) => HIDDEN_FOLDERS.has(p));
       });
 
-    // Lưu File[] vào ref (KHÔNG vào state)
-    filesRef.current = filtered;
+    // Strip root folder name (webkitRelativePath always prefixes with folder name)
+    const sample = filtered[0]?.path ?? '';
+    const firstSegment = sample.split('/')[0];
+    const hasRootPrefix =
+      filtered.length > 1 &&
+      firstSegment.length > 0 &&
+      filtered.every((f) => f.path.startsWith(firstSegment + '/'));
+    const strippedFiles = hasRootPrefix
+      ? filtered.map((f) => ({ ...f, path: f.path.split('/').slice(1).join('/') }))
+      : filtered;
 
-    // Build tree (chỉ paths) — async, yield mß╗ùi 1000 paths
-    const paths = filtered.map((f) => f.path);
-    const newTree = await buildTree(paths);
-
-    // Auto-select tất cả paths. Tách 2 setState bằng yield để React render mượt.
-    setTree(newTree);
-    await new Promise((r) => setTimeout(r, 0));
-    // Restore selection từ localStorage nếu có overlap, không th├¼ select all
-    const previousPaths = selectionStore.getAll();
-    const restored = restoreSelection(paths, previousPaths);
-    selectionStore.replace(restored);
-    setParts([]);
-    setLogs([{
-      id: ++logIdRef.current,
-      message:
-        restored.length === paths.length
-          ? `Đã qu├⌐t ${filtered.length} file (chß╗ìn tất cả)`
-          : `Đã qu├⌐t ${filtered.length} file (restore ${restored.length}/${paths.length} file đã chß╗ìn trước)`,
-      type: 'info',
-      timestamp: new Date(),
-    }]);
+    const slot = await addFolderSlot(strippedFiles, hasRootPrefix ? firstSegment : undefined);
+    log(`Đã thêm folder "${slot.label}" (${strippedFiles.length} file)`);
     setBusyMessage(null);
+    // Reset input value so same folder can be re-uploaded
+    if (inputRef.current) inputRef.current.value = '';
   }
 
   // ============================================================
-  // Pack — đọc content files đã chß╗ìn
+  // Pack — đọc content files đã chọn
   // ============================================================
   async function handlePack() {
+    // Abort previous pack nếu đang chạy
+    packAbortRef.current?.abort();
+    const controller = new AbortController();
+    packAbortRef.current = controller;
+
     setIsPacking(true);
     setParts([]);
     setLogs([]);
     setProgress({ current: 0, total: 0, path: '' });
-    // Pack mới → clear save state cũ (packId cũ không c├▓n valid)
-    setSaveState({ isSaving: false, packId: null, savedIndices: [], failedIndices: [], saved: 0, total: 0 });
+    // Pack mới → clear save state cũ (packId cũ không còn valid)
+    resetSaveState();
 
-    // Scroll tß╗¢i progress bar sau khi DOM render
+    // Scroll tới progress bar sau khi DOM render
     requestAnimationFrame(() => {
       progressRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
 
-    // Lß║Ñy file từ ref, lß╗ìc theo selection + filter.
-    // Detect root prefix (nếu có): tất cả path cùng share segment đầu th├¼ đó là root.
-    const sample = filesRef.current[0]?.path ?? '';
-    const firstSegment = sample.split('/')[0];
-    const hasRootPrefix =
-      filesRef.current.length > 1 &&
-      firstSegment.length > 0 &&
-      filesRef.current.every((f) => f.path.startsWith(firstSegment + '/'));
-    const stripRoot = (path: string): string =>
-      hasRootPrefix ? path.split('/').slice(1).join('/') : path;
+    // Lấy file từ tất cả folder slots, prefix path = slot.label
+    const allFiles: { file: File; path: string; prefixedPath: string }[] = [];
+    for (const slot of folderQueue) {
+      for (const f of slot.files) {
+        allFiles.push({ file: f.file, path: f.path, prefixedPath: `${slot.label}/${f.path}` });
+      }
+    }
 
-    // Log chi tiết file bß╗ï filter để user biß║┐t tại sao bß╗ï loß║íi.
+    // Log chi tiết file bị filter để user biết tại sao bị loại.
     const filteredOut: { path: string; reason: string }[] = [];
-    const toRead = filesRef.current.filter((f) => {
-      if (!selectionStore.has(f.path)) return false;
-      const relativePath = stripRoot(f.path);
-      const filename = relativePath.split('/').pop() ?? '';
+    const toRead = allFiles.filter((f) => {
+      if (!selectionStore.has(f.prefixedPath)) return false;
+      const filename = f.path.split('/').pop() ?? '';
 
-      // Whitelist file lß╗¢n (package-lock.json) — bypass exclude pattern.
-      // Lừ do: user có thể có options cũ trong localStorage exclude file này.
-      // Packer đã tự chunk được n├¬n không cần exclude nß╗»a.
+      // Whitelist file lớn (package-lock.json) — bypass exclude pattern.
       const isWhitelisted = LARGE_FILE_WHITELIST.has(filename);
 
-      if (!isWhitelisted && isExcluded(relativePath, options.excludePatterns)) {
-        filteredOut.push({ path: f.path, reason: 'exclude pattern' });
+      if (!isWhitelisted && isExcluded(f.path, options.excludePatterns)) {
+        filteredOut.push({ path: f.prefixedPath, reason: 'exclude pattern' });
         return false;
       }
-      if (!isExtensionAllowed(relativePath, options.includeExtensions)) {
-        filteredOut.push({ path: f.path, reason: 'extension không trong include list' });
+      if (!isExtensionAllowed(f.path, options.includeExtensions)) {
+        filteredOut.push({ path: f.prefixedPath, reason: 'extension không trong include list' });
         return false;
       }
       return true;
     });
 
-    // Log file bß╗ï filter (giß╗¢i hß║ín 30 d├▓ng để không spam)
+    // Log file bị filter (giới hạn 30 dòng để không spam)
     if (filteredOut.length > 0) {
-      log(`Filter: ${filteredOut.length} file bß╗ï loß║íi (xem chi tiết b├¬n d╞░ß╗¢i)`, 'warning');
+      log(`Filter: ${filteredOut.length} file bị loại (xem chi tiết bên dưới)`, 'warning');
       for (const f of filteredOut.slice(0, 30)) {
-        log(`  Γ£ù ${f.path} — ${f.reason}`, 'warning');
+        log(`  ✗ ${f.path} — ${f.reason}`, 'warning');
       }
       if (filteredOut.length > 30) {
         log(`  ... vă ${filteredOut.length - 30} file khác`, 'warning');
@@ -782,22 +750,31 @@ export default function PackPanel() {
     }
 
     setProgress({ current: 0, total: toRead.length, path: '' });
-    log(`Bß║»t đầu đọc ${toRead.length} file...`);
+    log(`Bắt đầu đọc ${toRead.length} file...`);
 
     const { files: packedFiles, failed } = await readFiles(
-      toRead.map((f) => ({ file: f.file, path: stripRoot(f.path) })),
+      toRead.map((f) => ({ file: f.file, path: f.prefixedPath })),
       (p) => {
         setProgress({ current: p.current, total: p.total, path: p.currentPath });
         if (p.current % 50 === 0 || p.current === p.total) {
-          log(`─Éß╗ìc ${p.current}/${p.total}: ${p.currentPath}`);
+          log(`Đọc ${p.current}/${p.total}: ${p.currentPath}`);
         }
       },
+      controller.signal,
     );
 
-    for (const f of failed.slice(0, 20)) {
-      log(`Bß╗Å qua: ${f.path} (${f.reason})`, 'warning');
+    // Nếu bị abort giữa chừng → dừng sớm
+    if (controller.signal.aborted) {
+      log('Pack đã bị huỷ.', 'warning');
+      setIsPacking(false);
+      setProgress(null);
+      return;
     }
-    if (failed.length > 20) log(`... vă ${failed.length - 20} file khác bß╗ï bß╗Å qua`, 'warning');
+
+    for (const f of failed.slice(0, 20)) {
+      log(`Bỏ qua: ${f.path} (${f.reason})`, 'warning');
+    }
+    if (failed.length > 20) log(`... vă ${failed.length - 20} file khác bị bỏ qua`, 'warning');
 
     if (packedFiles.length === 0) {
       log('Không đọc được file năo!', 'error');
@@ -809,29 +786,101 @@ export default function PackPanel() {
     log(`Đã đọc ${packedFiles.length} file. Đang chia parts...`);
     setProgress({ current: packedFiles.length, total: packedFiles.length, path: 'Đang chia parts...' });
     const result = await packFiles(packedFiles, options);
-    log(`Γ£ô Xong! ${result.length} part`, 'success');
+    log(`✓ Xong! ${result.length} part`, 'success');
 
     setParts(result);
     setIsPacking(false);
     setProgress(null);
   }
 
-  // ─Éß║┐m file đã chß╗ìn (chỉ file, không folder paths)
-  const selectedFileCount = useMemo(() => {
-    if (!tree) return 0;
-    let count = 0;
-    const filePaths = new Set(filesRef.current.map((f) => f.path));
-    const selected = selectionStore.getAll();
-    for (const p of selected) {
-      if (filePaths.has(p)) count++;
+  // Đếm file đã chọn (chỉ file, không folder paths)
+  const selectedFileCount = useSyncExternalStore(
+    useCallback((cb) => selectionStore.subscribeAll(cb), [selectionStore]),
+    useCallback(() => {
+      if (!tree) return 0;
+      let count = 0;
+      const filePaths = new Set<string>();
+      for (const slot of folderQueue) {
+        for (const f of slot.files) {
+          filePaths.add(`${slot.label}/${f.path}`);
+        }
+      }
+      for (const p of selectionStore.getAll()) {
+        if (filePaths.has(p)) count++;
+      }
+      return count;
+    }, [tree, selectionStore, folderQueue]),
+  );
+
+  // Compute visible paths cho search filter — bao gồm cả ancestor paths
+  // để folder chứa file match vẫn hiện. Empty query = null (không filter).
+  const visiblePaths = useMemo<Set<string> | null>(() => {
+    if (!tree || !searchQuery.trim()) return null;
+    const query = searchQuery.trim().toLowerCase();
+    const visible = new Set<string>();
+    function walk(node: TreeNode): boolean {
+      let selfOrDescMatch = false;
+      if (!node.isFolder) {
+        // File: match theo tên hoặc full path
+        if (node.name.toLowerCase().includes(query) || node.path.toLowerCase().includes(query)) {
+          visible.add(node.path);
+          selfOrDescMatch = true;
+        }
+      } else {
+        // Folder: check children
+        for (const c of node.children) {
+          if (walk(c)) selfOrDescMatch = true;
+        }
+        // Cũng match folder theo tên (VD user search "src" → toàn folder src visible)
+        if (node.name.toLowerCase().includes(query)) {
+          selfOrDescMatch = true;
+          // Add tất cả descendants của folder này
+          for (const p of node.descendantPaths) visible.add(p);
+        }
+        if (selfOrDescMatch) visible.add(node.path);
+      }
+      return selfOrDescMatch;
     }
-    return count;
+    for (const c of tree.children) walk(c);
+    return visible;
+  }, [tree, searchQuery]);
+
+  // Estimate output size cho preview
+  const outputEstimate = useMemo(() => {
+    if (!tree || selectedFileCount === 0) return null;
+    const selected = new Set(selectionStore.getAll());
+    let totalBytes = 0;
+    for (const slot of folderQueue) {
+      for (const f of slot.files) {
+        if (selected.has(`${slot.label}/${f.path}`)) {
+          totalBytes += f.file.size;
+        }
+      }
+    }
+    // Overhead ~150 bytes/file cho markers (FILE_START, PATH, CONTENT_START, FILE_END)
+    const OVERHEAD_PER_FILE = 150;
+    const totalChars = totalBytes + selectedFileCount * OVERHEAD_PER_FILE;
+    const estimatedParts = Math.max(1, Math.ceil(totalChars / options.maxCharsPerPart));
+    return { totalBytes, totalChars, estimatedParts };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tree, totalSelected]);
+  }, [tree, folderQueue, selectedFileCount, options.maxCharsPerPart, selectionStore]);
+
+  // Color map cho tree root folders — phải ở top-level, KHÔNG trong conditional
+  const slotColorMap = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of folderQueue) m.set(s.label, s.colorIndex);
+    return m;
+  }, [folderQueue]);
+
+  // Context value cho tree expand/collapse — stable reference
+  const treeExpandCtx = useMemo(
+    () => ({ value: treeExpandAll, reset: () => setTreeExpandAll(null) }),
+    [treeExpandAll],
+  );
 
   return (
     <div className="space-y-3">
-      {/* Loading overlay khi xß╗¡ lừ nặng */}
+      {/* Loading overlay khi xử lừ nặng */}
       {busyMessage && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div className="flex items-center gap-3 border border-border bg-card px-6 py-4 shadow-lg">
@@ -841,26 +890,20 @@ export default function PackPanel() {
         </div>
       )}
 
-      {!tree && (
+      {folderQueue.length === 0 && (
+        <div className="space-y-3">
+        <ScriptGenerator />
         <div
           onClick={() => {
-            // Hiển thị busy ngay v├¼ browser sß║╜ block UI khi scan folder lß╗¢n
-            setBusyMessage('Đang mở dialog chß╗ìn folder...');
+            setBusyMessage('Đang mở dialog chọn folder...');
             const input = inputRef.current;
             if (!input) return;
 
-            // Detect cancel/đóng dialog để clear busyMessage.
-            // - `cancel` event: modern browser fire khi user đóng dialog không chß╗ìn
-            //   (Chromium 113+, Firefox 91+). Không fire khi user chß╗ìn folder.
-            // - `focus` fallback: dialog đóng → focus về window. Onchange của
-            //   input sß║╜ fire TR╞»ß╗ÜC focus n├¬n check `files.length` để biß║┐t user
-            //   thß╗▒c sß╗▒ chß╗ìn hay cancel.
             const clearIfNoFiles = () => {
-              // Yield 1 tick để onChange (nếu có) chạy trước
               setTimeout(() => {
                 if ((input.files?.length ?? 0) === 0) {
                   setBusyMessage((m) =>
-                    m === 'Đang mở dialog chß╗ìn folder...' ? null : m,
+                    m === 'Đang mở dialog chọn folder...' ? null : m,
                   );
                 }
               }, 0);
@@ -882,45 +925,33 @@ export default function PackPanel() {
           onDrop={async (e) => {
             e.preventDefault();
             e.currentTarget.classList.remove('border-primary', 'bg-popover');
-            setBusyMessage('Đang qu├⌐t thư mục...');
+            setBusyMessage('Đang quét thư mục...');
             await new Promise((r) => setTimeout(r, 0));
             const items = Array.from(e.dataTransfer.items);
             const collected: { file: File; path: string }[] = [];
+            let rootFolderName: string | undefined;
             for (const item of items) {
               const entry = item.webkitGetAsEntry?.();
-              if (entry) await traverseEntry(entry, '', collected);
+              if (entry) {
+                if (!rootFolderName && entry.isDirectory) rootFolderName = entry.name;
+                await traverseEntry(entry, '', collected);
+              }
             }
             if (collected.length > 0) {
-              filesRef.current = collected;
-              const paths = collected.map((f) => f.path);
-              const built = await buildTree(paths);
-              setTree(built);
-              await new Promise((r) => setTimeout(r, 0));
-              const previousPaths = selectionStore.getAll();
-              const restored = restoreSelection(paths, previousPaths);
-              selectionStore.replace(restored);
-              setParts([]);
-              setLogs([{
-                id: ++logIdRef.current,
-                message:
-                  restored.length === paths.length
-                    ? `Đã qu├⌐t ${collected.length} file (drag-drop, chß╗ìn tất cả)`
-                    : `Đã qu├⌐t ${collected.length} file (restore ${restored.length}/${paths.length})`,
-                type: 'info',
-                timestamp: new Date(),
-              }]);
+              await addFolderSlot(collected, rootFolderName);
+              log(`Đã thêm folder (drag-drop, ${collected.length} file)`);
             }
             setBusyMessage(null);
           }}
           className="flex cursor-pointer flex-col items-center justify-center border-2 border-dashed border-border bg-card py-10 text-center transition-colors hover:border-primary hover:bg-popover"
         >
           <FolderOpen className="mb-2 h-8 w-8 text-primary" />
-          <p className="text-sm font-medium text-foreground">K├⌐o-thß║ú thư mục vào đ├óy</p>
+          <p className="text-sm font-medium text-foreground">Kéo-thả thư mục vào đây</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Hoß║╖c click để chß╗ìn (k├⌐o-thß║ú nhanh h╞ín, không bß╗ï lag với project lß╗¢n)
+            Hoặc click để chọn (kéo-thả nhanh hơn, không bị lag với project lớn)
           </p>
           <p className="mt-2 text-[10px] text-warning/80">
-            Click chß╗ìn folder có thể lag nếu project lß╗¢n
+            Có thể chậm nếu kích thước folder lớn
           </p>
           <input
             ref={inputRef}
@@ -933,216 +964,430 @@ export default function PackPanel() {
             onChange={handleFolderInput}
           />
         </div>
+        </div>
       )}
 
-      {tree && (
-        <>
-          <PackerOptions options={options} onChange={setOptions} />
-
-          {/* Tree */}
-          <div className="border border-border bg-card">
-            <div className="flex items-center justify-between border-b border-border bg-muted px-3 py-2">
-              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                C├óy thư mục — {selectedFileCount}/{tree.fileCount} file đã chß╗ìn
-              </span>
-              <div className="flex gap-2">
-                <button
-                  onClick={async () => {
-                    setBusyMessage('Đang chß╗ìn tất cả...');
-                    await new Promise((r) => setTimeout(r, 0));
-                    const all: string[] = [];
-                    function collect(node: TreeNode) {
-                      all.push(node.path);
-                      for (const c of node.children) collect(c);
-                    }
-                    for (const c of tree.children) collect(c);
-                    selectionStore.replace(all);
-                    setBusyMessage(null);
-                  }}
-                  className="text-xs text-primary hover:underline"
-                >
-                  Chọn tất cả
-                </button>
-                <button
-                  onClick={async () => {
-                    setBusyMessage('Đang bß╗Å chß╗ìn...');
-                    await new Promise((r) => setTimeout(r, 0));
-                    selectionStore.clear();
-                    setBusyMessage(null);
-                  }}
-                  className="text-xs text-muted-foreground hover:underline"
-                >
-                  Bß╗Å chß╗ìn
-                </button>
+      {folderQueue.length > 0 && (
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+          {/* ===== Cột trái: Input & Config ===== */}
+          <div className="space-y-3">
+            {/* Folder Queue */}
+            <div
+              className="border border-border bg-card"
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.currentTarget.classList.add('border-primary');
+              }}
+              onDragLeave={(e) => {
+                e.currentTarget.classList.remove('border-primary');
+              }}
+              onDrop={async (e) => {
+                e.preventDefault();
+                e.currentTarget.classList.remove('border-primary');
+                setBusyMessage('Đang quét thư mục...');
+                await new Promise((r) => setTimeout(r, 0));
+                const items = Array.from(e.dataTransfer.items);
+                const collected: { file: File; path: string }[] = [];
+                let rootFolderName: string | undefined;
+                for (const item of items) {
+                  const entry = item.webkitGetAsEntry?.();
+                  if (entry) {
+                    if (!rootFolderName && entry.isDirectory) rootFolderName = entry.name;
+                    await traverseEntry(entry, '', collected);
+                  }
+                }
+                if (collected.length > 0) {
+                  await addFolderSlot(collected, rootFolderName);
+                  log(`Đã thêm folder (drag-drop, ${collected.length} file)`);
+                }
+                setBusyMessage(null);
+              }}
+            >
+              <div className="flex items-center justify-between border-b border-border bg-muted px-3 py-2">
+                <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Folder Queue — {folderQueue.length} folder
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      setBusyMessage('Đang mở dialog chọn folder...');
+                      const input = inputRef.current;
+                      if (!input) return;
+                      const clearIfNoFiles = () => {
+                        setTimeout(() => {
+                          if ((input.files?.length ?? 0) === 0) {
+                            setBusyMessage((m) =>
+                              m === 'Đang mở dialog chọn folder...' ? null : m,
+                            );
+                          }
+                        }, 0);
+                        input.removeEventListener('cancel', clearIfNoFiles);
+                        window.removeEventListener('focus', clearIfNoFiles);
+                      };
+                      input.addEventListener('cancel', clearIfNoFiles);
+                      window.addEventListener('focus', clearIfNoFiles);
+                      input.click();
+                    }}
+                    className="flex items-center gap-1 text-xs text-primary hover:underline"
+                  >
+                    <Plus className="h-3 w-3" />
+                    Thêm folder
+                  </button>
+                </div>
               </div>
-            </div>
-
-            <SelectionContext.Provider value={selectionStore}>
-              <div className="max-h-80 overflow-y-auto p-1 text-xs">
-                {tree.children.map((node) => (
-                  <TreeNodeView
-                    key={node.path}
-                    node={node}
-                    depth={0}
-                    onToggle={(paths, checked) => selectionStore.toggle(paths, checked)}
+              <div className="divide-y divide-border">
+                {folderQueue.map((slot) => (
+                  <FolderSlotRow
+                    key={slot.id}
+                    slot={slot}
+                    onRename={(label) => renameFolderSlot(slot.id, label)}
+                    onRemove={() => removeFolderSlot(slot.id)}
+                    onHighlight={() => setHighlightedLabel(slot.label)}
                   />
                 ))}
               </div>
-            </SelectionContext.Provider>
-          </div>
-
-          <div className="flex items-center justify-between border border-border bg-card px-3 py-2 text-xs">
-            <span className="text-muted-foreground">
-              {selectedFileCount} file sß║╜ được pack
-            </span>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={reset} className="gap-1.5">
-                <RotateCcw className="h-3 w-3" />
-                Reset
-              </Button>
-              <Button
-                size="sm"
-                onClick={handlePack}
-                disabled={isPacking || selectedFileCount === 0}
-                className="gap-1.5"
-              >
-                {isPacking ? (
-                  <PackerLoadingSpinner size="sm" />
-                ) : (
-                  <Package className="h-3 w-3" />
-                )}
-                {isPacking ? 'Đang pack...' : 'Pack'}
-              </Button>
             </div>
-          </div>
 
-          <TerminalLog logs={logs} />
+            {/* Hidden input for "Thêm folder" */}
+            <input
+              ref={inputRef}
+              type="file"
+              // @ts-expect-error webkitdirectory
+              webkitdirectory="true"
+              directory="true"
+              multiple
+              className="hidden"
+              onChange={handleFolderInput}
+            />
 
-          {/* Progress bar khi đang pack */}
-          {isPacking && progress && (
-            <div ref={progressRef} className="border border-border bg-card p-3 space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-medium text-foreground">
-                  {progress.total > 0 ? `${progress.current}/${progress.total} file` : 'Đang chuẩn bß╗ï...'}
-                </span>
-                <span className="text-primary font-mono">
-                  {progress.total > 0 ? `${Math.round((progress.current / progress.total) * 100)}%` : ''}
-                </span>
-              </div>
-              <div className="h-2 w-full bg-background overflow-hidden">
-                <div
-                  className="h-full bg-primary"
-                  style={{
-                    width: progress.total > 0 ? `${displayProgress}%` : '5%',
-                  }}
-                />
-              </div>
-              {progress.path && (
-                <p className="truncate text-[10px] text-muted-foreground font-mono">
-                  → {progress.path}
-                </p>
-              )}
-            </div>
-          )}
+            {/* Folder Diff — on-demand, chỉ khi user bật */}
+            {folderQueue.length >= 2 && (
+              <FolderDiffToggle folderQueue={folderQueue} />
+            )}
 
-          {parts.length > 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between border border-border bg-card px-3 py-2 text-xs">
-                <span>
-                  Output: <span className="font-semibold">{parts.length}</span> part ┬╖{' '}
-                  Tổng <span className="font-semibold">
-                    {parts.reduce((s, p) => s + p.charCount, 0).toLocaleString('vi-VN')}
-                  </span> ký tự
-                </span>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    onClick={() => handleSaveToSource(parts)}
-                    disabled={saveState.isSaving}
-                    className="h-7 gap-1.5 px-2 text-xs"
-                  >
-                    {saveState.isSaving ? (
-                      <PackerLoadingSpinner size="sm" />
-                    ) : (
-                      <Package className="h-3 w-3" />
-                    )}
-                    {saveState.isSaving
-                      ? `Đang lưu ${saveState.saved}/${saveState.total}...`
-                      : saveState.failedIndices.length > 0
-                        ? `Lưu tiếp ${saveState.failedIndices.length} part c├▓n thiß║┐u`
-                        : saveState.saved === parts.length && saveState.saved > 0
-                          ? `Đã lưu ${saveState.saved}/${parts.length}`
-                          : 'Lưu vào Source'}
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={() => handleDownloadAllAsZip(parts)}
-                    className="h-7 gap-1.5 px-2 text-xs"
-                  >
-                    <Archive className="h-3 w-3" />
-                    Tß║úi ZIP ({parts.length} parts)
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleDownloadAllAsTxt(parts)}
-                    className="h-7 gap-1.5 px-2 text-xs"
-                  >
-                    <Download className="h-3 w-3" />
-                    Tß║úi .txt ri├¬ng
-                  </Button>
+            <PackerOptions options={options} onChange={setOptions} />
+
+            {/* Tree */}
+            {tree && (
+              <div className="border border-border bg-card">
+                {/* Search bar */}
+                <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+                  <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Tìm file theo tên hoặc đường dẫn..."
+                    className="h-7 flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground focus:outline-none"
+                  />
+                  {searchQuery && (
+                    <button
+                      onClick={() => setSearchQuery('')}
+                      className="shrink-0 text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
-              </div>
 
-              {/* Save-to-Source progress bar — hiß╗çn khi đang lưu hoặc save dở */}
-              {(saveState.isSaving || saveState.saved > 0 || saveState.failedIndices.length > 0) && (
-                <div className="border border-border bg-card p-3 space-y-2">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-medium text-foreground">
-                      {saveState.isSaving
-                        ? `Đang lưu vào Source: ${saveState.saved}/${saveState.total} part`
-                        : saveState.failedIndices.length === 0
-                          ? `Đã lưu xong ${saveState.saved}/${saveState.total} part`
-                          : `Đã lưu ${saveState.saved}/${saveState.total} — thiß║┐u part ${saveState.failedIndices.map((i) => i + 1).join(', ')}`}
-                    </span>
-                    <span className="font-mono text-primary">
-                      {saveState.total > 0
-                        ? `${Math.round((saveState.saved / saveState.total) * 100)}%`
-                        : ''}
-                    </span>
-                  </div>
-                  <div className="h-2 w-full overflow-hidden bg-background">
-                    <div
-                      className={cn(
-                        'h-full transition-all',
-                        saveState.failedIndices.length > 0 && !saveState.isSaving
-                          ? 'bg-warning'
-                          : 'bg-primary',
-                      )}
-                      style={{
-                        width:
-                          saveState.total > 0
-                            ? `${(saveState.saved / saveState.total) * 100}%`
-                            : '0%',
+                {/* Tree header */}
+                <div className="flex items-center justify-between border-b border-border bg-muted px-3 py-1.5">
+                  <span className="text-[11px] text-muted-foreground">
+                    {selectedFileCount}/{tree.fileCount} file đã chọn
+                    {searchQuery && visiblePaths && ` · ${visiblePaths.size} kết quả`}
+                  </span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        if (selectedFileCount === tree.fileCount) {
+                          selectionStore.clear();
+                        } else {
+                          const all: string[] = [];
+                          function collect(node: TreeNode) {
+                            all.push(node.path);
+                            for (const c of node.children) collect(c);
+                          }
+                          for (const c of tree.children) collect(c);
+                          selectionStore.replace(all);
+                        }
                       }}
-                    />
+                      className="text-xs text-primary hover:underline"
+                    >
+                      {selectedFileCount === tree.fileCount ? 'Bỏ chọn' : 'Chọn tất cả'}
+                    </button>
+                    <button
+                      onClick={() => setTreeExpandAll((v) => v === false ? true : false)}
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      {treeExpandAll === false ? 'Mở rộng' : 'Thu gọn'}
+                    </button>
                   </div>
                 </div>
-              )}
 
-              {parts.map((p) => (
-                <PartOutput key={p.index} part={p} />
-              ))}
+                <SelectionContext.Provider value={selectionStore}>
+                  <VisibilityContext.Provider value={visiblePaths}>
+                  <SlotColorMapContext.Provider value={slotColorMap}>
+                  <HighlightedLabelContext.Provider value={highlightedLabel}>
+                  <TreeExpandAllContext.Provider value={treeExpandCtx}>
+                  <div className="max-h-80 overflow-y-auto p-1 text-xs">
+                    {tree.children.map((node) => (
+                      <TreeNodeView
+                        key={node.path}
+                        node={node}
+                        depth={0}
+                        onToggle={(paths, checked) => selectionStore.toggle(paths, checked)}
+                      />
+                    ))}
+                  </div>
+                  </TreeExpandAllContext.Provider>
+                  </HighlightedLabelContext.Provider>
+                  </SlotColorMapContext.Provider>
+                  </VisibilityContext.Provider>
+                </SelectionContext.Provider>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between border border-border bg-card px-3 py-2 text-xs">
+              <span className="text-muted-foreground">
+                {selectedFileCount} file sẽ được pack
+                {outputEstimate && selectedFileCount > 0 && (
+                  <span className="ml-2 text-[10px] text-muted-foreground/80">
+                    · ~{formatKb(outputEstimate.totalBytes)} · dự kiến {outputEstimate.estimatedParts} part
+                  </span>
+                )}
+              </span>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={reset} className="gap-1.5">
+                  <RotateCcw className="h-3 w-3" />
+                  Reset
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handlePack}
+                  disabled={isPacking || selectedFileCount === 0}
+                  className="gap-1.5"
+                >
+                  {isPacking ? (
+                    <PackerLoadingSpinner size="sm" />
+                  ) : (
+                    <Package className="h-3 w-3" />
+                  )}
+                  {isPacking ? 'Đang pack...' : 'Pack'}
+                </Button>
+              </div>
             </div>
-          )}
-        </>
+          </div>
+
+          {/* ===== Cột phải: Output & Feedback ===== */}
+          <div className="space-y-3 lg:sticky lg:top-4 lg:self-start">
+            <ScriptGenerator compact />
+            <TerminalLog logs={logs} />
+
+            {/* Progress bar khi đang pack */}
+            {isPacking && progress && (
+              <div ref={progressRef} className="border border-border bg-card p-3 space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-foreground">
+                    {progress.total > 0 ? `${progress.current}/${progress.total} file` : 'Đang chuẩn bị...'}
+                  </span>
+                  <span className="text-primary font-mono">
+                    {progress.total > 0 ? `${Math.round((progress.current / progress.total) * 100)}%` : ''}
+                  </span>
+                </div>
+                <div className="h-2 w-full bg-background overflow-hidden">
+                  <div
+                    className="h-full bg-primary"
+                    style={{
+                      width: progress.total > 0 ? `${displayProgress}%` : '5%',
+                    }}
+                  />
+                </div>
+                {progress.path && (
+                  <p className="truncate text-[10px] text-muted-foreground font-mono">
+                    → {progress.path}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {parts.length > 0 && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between border border-border bg-card px-3 py-2 text-xs">
+                  <span>
+                    Output: <span className="font-semibold">{parts.length}</span> part &middot;{' '}
+                    Tổng <span className="font-semibold">
+                      {parts.reduce((s, p) => s + p.charCount, 0).toLocaleString('vi-VN')}
+                    </span> ký tự
+                  </span>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => saveToSource(parts, selectedFileCount)}
+                      disabled={saveState.isSaving}
+                      className="h-7 gap-1.5 px-2 text-xs"
+                    >
+                      {saveState.isSaving ? (
+                        <PackerLoadingSpinner size="sm" />
+                      ) : (
+                        <Package className="h-3 w-3" />
+                      )}
+                      {saveState.isSaving
+                        ? `Đang lưu ${saveState.saved}/${saveState.total}...`
+                        : saveState.failedIndices.length > 0
+                          ? `Lưu tiếp ${saveState.failedIndices.length} part còn thiếu`
+                          : saveState.saved === parts.length && saveState.saved > 0
+                            ? `Đã lưu ${saveState.saved}/${parts.length}`
+                            : 'Lưu vào Source'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => handleDownloadAllAsZip(parts)}
+                      className="h-7 gap-1.5 px-2 text-xs"
+                    >
+                      <Archive className="h-3 w-3" />
+                      Tải ZIP ({parts.length} parts)
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleDownloadAllAsTxt(parts)}
+                      className="h-7 gap-1.5 px-2 text-xs"
+                    >
+                      <Download className="h-3 w-3" />
+                      Tải .txt riêng
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Save-to-Source progress bar — hiện khi đang lưu hoặc save dở */}
+                {(saveState.isSaving || saveState.saved > 0 || saveState.failedIndices.length > 0) && (
+                  <div className="border border-border bg-card p-3 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-medium text-foreground">
+                        {saveState.isSaving
+                          ? `Đang lưu vào Source: ${saveState.saved}/${saveState.total} part`
+                          : saveState.failedIndices.length === 0
+                            ? `Đã lưu xong ${saveState.saved}/${saveState.total} part`
+                            : `Đã lưu ${saveState.saved}/${saveState.total} — thiếu part ${saveState.failedIndices.map((i) => i + 1).join(', ')}`}
+                      </span>
+                      <span className="font-mono text-primary">
+                        {saveState.total > 0
+                          ? `${Math.round((saveState.saved / saveState.total) * 100)}%`
+                          : ''}
+                      </span>
+                    </div>
+                    <div className="h-2 w-full overflow-hidden bg-background">
+                      <div
+                        className={cn(
+                          'h-full transition-all',
+                          saveState.failedIndices.length > 0 && !saveState.isSaving
+                            ? 'bg-warning'
+                            : 'bg-primary',
+                        )}
+                        style={{
+                          width:
+                            saveState.total > 0
+                              ? `${(saveState.saved / saveState.total) * 100}%`
+                              : '0%',
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {parts.map((p) => (
+                  <PartOutput key={p.index} part={p} />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
 }
 
 // ============================================================
-// TreeNodeView - render 1 node, lazy children (collapsed mß║╖c định nếu > 50 children)
+// FolderSlotRow — 1 row trong folder queue (label editable + delete)
+// ============================================================
+function FolderSlotRow({
+  slot,
+  onRename,
+  onRemove,
+  onHighlight,
+}: {
+  slot: FolderSlot;
+  onRename: (label: string) => void;
+  onRemove: () => void;
+  onHighlight: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(slot.label);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  function commit() {
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== slot.label) {
+      onRename(trimmed);
+    } else {
+      setDraft(slot.label);
+    }
+    setEditing(false);
+  }
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-2">
+      <span className={cn('h-2.5 w-2.5 shrink-0 rounded-full', SLOT_COLORS[slot.colorIndex].dot)} />
+      <FolderOpen className={cn('h-3.5 w-3.5 shrink-0', SLOT_COLORS[slot.colorIndex].text)} />
+      {editing ? (
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit();
+            if (e.key === 'Escape') { setDraft(slot.label); setEditing(false); }
+          }}
+          className="h-6 flex-1 border border-input bg-background px-1.5 text-xs focus:border-primary focus:outline-none"
+        />
+      ) : (
+        <span
+          className="flex-1 truncate text-xs font-medium text-foreground cursor-pointer hover:text-primary"
+          onClick={onHighlight}
+          onDoubleClick={() => setEditing(true)}
+          title="Click: hiện trong cây | Double-click: đổi tên"
+        >
+          {slot.label}
+        </span>
+      )}
+      <span className="text-[10px] text-muted-foreground">{slot.fileCount} file</span>
+      {!editing && (
+        <button
+          onClick={() => setEditing(true)}
+          className="text-muted-foreground hover:text-foreground"
+          title="Đổi tên"
+        >
+          <Pencil className="h-3 w-3" />
+        </button>
+      )}
+      <button
+        onClick={onRemove}
+        className="text-muted-foreground hover:text-destructive"
+        title="Xoá folder"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
+// ============================================================
+// TreeNodeView - render 1 node, lazy children (collapsed mặc định nếu > 50 children)
 // ============================================================
 function TreeNodeView({
   node,
@@ -1153,8 +1398,15 @@ function TreeNodeView({
   depth: number;
   onToggle: (paths: string[], checked: boolean) => void;
 }) {
-  // Folder lß╗¢n (>30 children) collapsed mß║╖c định
+  const visiblePaths = useContext(VisibilityContext);
+  // Filter: nếu search đang active và path không match → ẩn
+  if (visiblePaths && !visiblePaths.has(node.path)) return null;
+
+  // Folder lớn (>30 children) collapsed mặc định, nhưng khi search active thì auto-expand
   const [collapsed, setCollapsed] = useState(node.children.length > 30);
+  const { value: expandAll, reset: resetExpandAll } = useContext(TreeExpandAllContext);
+  // Priority: search active > global expand/collapse > local state
+  const effectiveCollapsed = visiblePaths ? false : expandAll !== null ? !expandAll : collapsed;
 
   if (!node.isFolder) {
     return <FileRow node={node} depth={depth} onToggle={onToggle} />;
@@ -1164,8 +1416,11 @@ function TreeNodeView({
     <FolderRow
       node={node}
       depth={depth}
-      collapsed={collapsed}
-      onToggleCollapse={() => setCollapsed((v) => !v)}
+      collapsed={effectiveCollapsed}
+      onToggleCollapse={() => {
+        setCollapsed((v) => !v);
+        resetExpandAll();
+      }}
       onToggle={onToggle}
     />
   );
@@ -1220,12 +1475,33 @@ function FolderRow({
   const isAllChecked = checkedCount === total;
   const isPartial = checkedCount > 0 && !isAllChecked;
 
+  // Color accent for root-level folders (depth 0 = folder slot root)
+  const slotColorMap = useContext(SlotColorMapContext);
+  const slotColor = depth === 0 ? slotColorMap.get(node.name) : undefined;
+  const borderClass = slotColor !== undefined ? SLOT_COLORS[slotColor].border : '';
+
+  // Highlight flash khi user click slot trong queue
+  const highlightedLabel = useContext(HighlightedLabelContext);
+  const isHighlighted = depth === 0 && highlightedLabel === node.name;
+  const rowRef = useRef<HTMLDivElement>(null);
+
+  // Scroll into view khi highlighted
+  useEffect(() => {
+    if (isHighlighted && rowRef.current) {
+      rowRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [isHighlighted]);
+
   return (
-    <div>
+    <div ref={rowRef}>
       <div
         onClick={onToggleCollapse}
-        className="flex cursor-pointer items-center gap-1 py-1 transition-colors hover:bg-popover"
-        style={{ paddingLeft: `${depth * 16}px` }}
+        className={cn(
+          'flex cursor-pointer items-center gap-1 py-1 transition-colors hover:bg-popover',
+          depth === 0 && borderClass && `border-l-2 ${borderClass}`,
+          isHighlighted && 'animate-pulse bg-primary/10',
+        )}
+        style={{ paddingLeft: `${depth * 16 + (depth === 0 ? 4 : 0)}px` }}
       >
         <button
           type="button"

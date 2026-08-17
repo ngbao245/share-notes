@@ -10,6 +10,9 @@
 //   1. AuthGuard boot → gọi authClient.auth.getSession() → setSession
 //   2. useProfileQuery chạy sau khi có session → setProfile
 //   3. onAuthStateChange event → setSession null → guard redirect login
+//
+// Helpers (isAdmin, checkPermission, getAllowedTools) sống trong
+// `@/lib/core-sdk/auth` — không duplicate ở store.
 // ============================================================
 
 import { create } from 'zustand';
@@ -50,27 +53,3 @@ export const useAuthStore = create<AuthState>((set) => ({
   setInitializing: (initializing) => set({ initializing }),
   clear: () => set({ session: null, profile: null }),
 }));
-
-// ============================================================
-// Helpers (non-hook) — dùng ngoài React component
-// ============================================================
-
-/** True nếu user đã đăng nhập + có profile. */
-export function isAuthenticated(): boolean {
-  const { session, profile } = useAuthStore.getState();
-  return Boolean(session && profile);
-}
-
-/** True nếu profile hiện tại là admin. */
-export function isAdmin(): boolean {
-  return useAuthStore.getState().profile?.role === 'admin';
-}
-
-/** Check tool có được phép dùng cho user hiện tại. Admin luôn OK. */
-export function isToolAllowed(toolId: string): boolean {
-  const profile = useAuthStore.getState().profile;
-  if (!profile) return false;
-  if (profile.role === 'admin') return true;
-  if (profile.allowed_tools.includes('*')) return true;
-  return profile.allowed_tools.includes(toolId);
-}

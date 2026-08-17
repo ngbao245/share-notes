@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase, BUCKET } from '@/tools/library/lib/supabase';
+import { createToolStorage } from '@/lib/plugin-storage';
 import type { Book } from '@/tools/library/lib/types';
 import { isPdfFile, parseFileMeta } from '@/tools/library/lib/file-meta';
 import { uploadWithProgress } from '@/tools/library/lib/upload-with-progress';
@@ -237,7 +238,6 @@ function sanitizeFilename(name: string): string {
 //
 // TTL 1 ngày — sách cũ vẫn hiện ngay khi reload, không stale lâu.
 
-const SNAPSHOT_KEY = 'reader_books_snapshot';
 const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface BooksSnapshot {
@@ -245,27 +245,23 @@ interface BooksSnapshot {
   saved_at: number;
 }
 
+const snapshotStorage = createToolStorage<BooksSnapshot>({
+  toolId: 'library',
+  key: 'books-snapshot',
+  scope: 'user',
+});
+
 function readSnapshot(): Book[] | undefined {
-  try {
-    const raw = localStorage.getItem(SNAPSHOT_KEY);
-    if (!raw) return undefined;
-    const s = JSON.parse(raw) as BooksSnapshot;
-    if (Date.now() - s.saved_at > SNAPSHOT_TTL_MS) return undefined;
-    // Empty snapshot = useless, force fresh fetch
-    if (s.data.length === 0) return undefined;
-    return s.data;
-  } catch {
-    return undefined;
-  }
+  const s = snapshotStorage.get();
+  if (!s) return undefined;
+  if (Date.now() - s.saved_at > SNAPSHOT_TTL_MS) return undefined;
+  // Empty snapshot = useless, force fresh fetch
+  if (s.data.length === 0) return undefined;
+  return s.data;
 }
 
 function writeSnapshot(data: Book[]) {
-  try {
-    const s: BooksSnapshot = { data, saved_at: Date.now() };
-    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(s));
-  } catch {
-    // quota exceeded → skip
-  }
+  snapshotStorage.set({ data, saved_at: Date.now() });
 }
 
 export function useBooks() {
@@ -562,7 +558,7 @@ export function useUploadBook() {
 
       report({ stage: 'done', percent: 100, compressSummary });
       // Optimistic invalidate snapshot — onSuccess refetch sẽ ghi lại
-      try { localStorage.removeItem(SNAPSHOT_KEY); } catch { /* ignore */ }
+      snapshotStorage.remove();
       return data as Book;
     },
     onSuccess: () => {
@@ -601,7 +597,7 @@ export function useDeleteBook() {
       // Evict blob cache để khỏi giữ rác
       await deleteCached(STORE_FILES, book.file_path);
       if (book.cover_url) await deleteCached(STORE_COVERS, book.cover_url);
-      try { localStorage.removeItem(SNAPSHOT_KEY); } catch { /* ignore */ }
+      snapshotStorage.remove();
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['reader', 'books'] });
@@ -713,7 +709,7 @@ export function useReplaceBookFile() {
       }
 
       report({ stage: 'done', percent: 100, compressSummary });
-      try { localStorage.removeItem(SNAPSHOT_KEY); } catch { /* ignore */ }
+      snapshotStorage.remove();
       return data as Book;
     },
     onSuccess: (updatedBook) => {
@@ -750,7 +746,7 @@ export function useRenameBook() {
         if (!old) return old;
         return old.map((b) => (b.id === bookId ? { ...b, title: newTitle } : b));
       });
-      try { localStorage.removeItem(SNAPSHOT_KEY); } catch { /* ignore */ }
+      snapshotStorage.remove();
     },
   });
 }

@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { LoadingState } from '@/components/shared';
 import { reEmbedAll, type ReEmbedProgress } from '@/lib/rag/re-embed-all';
 import { toast } from '@/components/ui/sonner';
-import { isAdmin } from '@/stores/authStore';
+import { isAdmin } from '@/lib/core-sdk/auth';
 
 // ============================================================
 // ReEmbedPanel — Admin only: re-embed all notes + tasks into RAG

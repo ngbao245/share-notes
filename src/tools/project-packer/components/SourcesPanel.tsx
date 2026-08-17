@@ -26,6 +26,7 @@ export default function SourcesPanel() {
     null,
   );
   const [listOpenMobile, setListOpenMobile] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Deep-link: /project-packer?noteId=X (from RAG)
   const [searchParams, setSearchParams] = useSearchParams();
@@ -84,16 +85,22 @@ export default function SourcesPanel() {
     const confirmMsg = `XÓA HẾT ${sources.length} SOURCE?\n\nKhông thể hoàn tác!\n\nOK để xác nhận.`;
     if (!window.confirm(confirmMsg)) return;
 
+    setIsDeleting(true);
     try {
       const { fetchJson } = await import('@/api/client');
       const { API } = await import('@/lib/config');
 
+      // Batch delete với concurrency limit 5
+      const CONCURRENCY = 5;
       let deleted = 0;
-      for (const source of sources) {
-        try {
-          await fetchJson(`${API.NOTES}/${source.id}`, { method: 'DELETE' });
-          deleted++;
-        } catch { /* continue */ }
+      for (let i = 0; i < sources.length; i += CONCURRENCY) {
+        const batch = sources.slice(i, i + CONCURRENCY);
+        const results = await Promise.allSettled(
+          batch.map((source) =>
+            fetchJson(`${API.NOTES}/${source.id}`, { method: 'DELETE' }),
+          ),
+        );
+        deleted += results.filter((r) => r.status === 'fulfilled').length;
       }
 
       toast.success(`Đã xóa ${deleted}/${sources.length} sources`);
@@ -101,11 +108,13 @@ export default function SourcesPanel() {
       sourcesQuery.refetch();
     } catch {
       toast.error('Không xóa được');
+    } finally {
+      setIsDeleting(false);
     }
   }
 
   return (
-    <div className="flex h-[70vh] border border-border">
+    <div className="flex h-full border border-border">
       {/* Source list */}
       <aside
         className={cn(
@@ -117,6 +126,7 @@ export default function SourcesPanel() {
         <SourceList
           sources={sources}
           isLoading={sourcesQuery.isLoading}
+          isDeleting={isDeleting}
           selectedId={selectedId}
           onSelect={handleSelect}
           onNew={handleNew}

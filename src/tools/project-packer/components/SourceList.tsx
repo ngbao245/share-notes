@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Search, Plus, X, Trash2 } from 'lucide-react';
+import { Search, Plus, X } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -19,6 +19,7 @@ import type { Note } from '@/schemas/note';
 interface SourceListProps {
   sources: Note[];
   isLoading: boolean;
+  isDeleting: boolean;
   selectedId: string | null;
   onSelect: (id: string) => void;
   onNew: () => void;
@@ -28,6 +29,7 @@ interface SourceListProps {
 export default function SourceList({
   sources,
   isLoading,
+  isDeleting,
   selectedId,
   onSelect,
   onNew,
@@ -60,17 +62,6 @@ export default function SourceList({
           Sources
         </h3>
         <div className="flex gap-1">
-          {sources.length > 0 && onDeleteAll && (
-            <Button
-              size="icon"
-              variant="ghost"
-              onClick={onDeleteAll}
-              title="Xóa hết sources"
-              className="h-7 w-7 text-destructive hover:text-destructive"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </Button>
-          )}
           <Button size="icon" variant="ghost" onClick={onNew} title="Tạo source mới" className="h-7 w-7">
             <Plus className="h-4 w-4" />
           </Button>
@@ -134,8 +125,21 @@ export default function SourceList({
         )}
       </div>
 
-      <div className="border-t border-border px-3 py-1.5 text-[10px] text-muted-foreground">
-        {filtered.length} / {sources.length} sources
+      <div className="border-t border-border px-3 py-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] text-muted-foreground">
+            {isDeleting ? 'Đang xóa...' : `${filtered.length} / ${sources.length} sources`}
+          </span>
+          {sources.length > 0 && onDeleteAll && (
+            <button
+              onClick={onDeleteAll}
+              disabled={isDeleting}
+              className="text-[10px] text-muted-foreground hover:text-destructive disabled:opacity-50"
+            >
+              {isDeleting ? 'Đang xóa...' : 'Xóa hết'}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

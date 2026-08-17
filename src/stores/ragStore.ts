@@ -25,6 +25,13 @@ import {
   type RagStatus,
   type RagTokens,
 } from '@/lib/rag/types';
+import { createToolStorage } from '@/lib/plugin-storage';
+
+const activeSessionStorage = createToolStorage<string>({
+  toolId: 'rag',
+  key: 'active-session',
+  scope: 'user',
+});
 
 /**
  * Pending context — caller (Reader SelectionMenu) đẩy raw quote + page
@@ -38,24 +45,24 @@ export interface RagPendingContext {
   id: string;
 }
 
-const ACTIVE_SESSION_LS_KEY = 'rag:activeSessionId';
-
 function readActiveSessionIdFromLS(): string | null {
-  try {
-    const v = localStorage.getItem(ACTIVE_SESSION_LS_KEY);
-    return v && v.length > 0 ? v : null;
-  } catch {
-    return null;
-  }
+  const v = activeSessionStorage.get();
+  return v && v.length > 0 ? v : null;
 }
 
 function writeActiveSessionIdToLS(id: string | null): void {
-  try {
-    if (id === null) localStorage.removeItem(ACTIVE_SESSION_LS_KEY);
-    else localStorage.setItem(ACTIVE_SESSION_LS_KEY, id);
-  } catch {
-    /* ignore */
-  }
+  if (id === null) activeSessionStorage.remove();
+  else activeSessionStorage.set(id);
+}
+
+/**
+ * Hydrate `activeSessionId` từ facade sau khi có session (real userId).
+ * ragStore init lúc module load (trước auth ready) — sync với 'anonymous'
+ * userId, không đọc được data user thật. Gọi từ AuthGuard sau setSession
+ * để hydrate lại đúng.
+ */
+export function hydrateRagActiveSession(): void {
+  useRagStore.setState({ activeSessionId: readActiveSessionIdFromLS() });
 }
 
 interface RagState {

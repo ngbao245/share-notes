@@ -3,8 +3,14 @@
 // ============================================================
 //
 // URL: /login (public route ngoài AuthGuard).
-// Form email + password → authClient.auth.signInWithPassword.
+// Form email/username + password → authClient.auth.signInWithPassword.
 // Query param ?next=... để redirect về URL user định vào sau login.
+//
+// Redirect strategy:
+//   Sau signInWithPassword success, session update qua onAuthStateChange
+//   → Zustand authStore.session không null → dòng `if (session) <Navigate>`
+//   dưới đây trigger redirect qua React Router. KHÔNG dùng
+//   window.location.href — full reload không cần thiết, gây flash trắng.
 // ============================================================
 
 import { useState, type FormEvent } from 'react';
@@ -32,6 +38,20 @@ function safeNext(raw: string | null): string {
   return decoded;
 }
 
+/**
+ * Fire-and-forget cập nhật last_login_at. Không block redirect.
+ * Fail silent — chỉ là telemetry, không critical.
+ */
+function updateLastLoginAt(): void {
+  void authClient.auth.getUser().then(({ data: { user } }) => {
+    if (!user) return;
+    void authClient
+      .from('profiles')
+      .update({ last_login_at: new Date().toISOString() })
+      .eq('id', user.id);
+  });
+}
+
 export default function LoginPage() {
   const [params] = useSearchParams();
   const session = useAuthStore((s) => s.session);
@@ -41,7 +61,8 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Đã login từ trước → về URL đích ngay
+  // Đã login từ trước → về URL đích ngay.
+  // Cũng chạy sau signIn thành công khi session state update.
   if (session) {
     return <Navigate to={safeNext(params.get('next'))} replace />;
   }
@@ -65,7 +86,7 @@ export default function LoginPage() {
         return;
       }
 
-      const { error: authErr } = await authClient.auth.signInWithPassword({
+      const { data, error: authErr } = await authClient.auth.signInWithPassword({
         email,
         password,
       });
@@ -77,26 +98,20 @@ export default function LoginPage() {
         return;
       }
 
-      // Update last_login_at
-      const { data: { user } } = await authClient.auth.getUser();
-      if (user) {
-        await authClient
-          .from('profiles')
-          .update({ last_login_at: new Date().toISOString() })
-          .eq('id', user.id);
+      // Manual set session vào Zustand ngay — không chờ onAuthStateChange listener
+      // (fire async, có race làm component đứng ở trang login vài giây).
+      // AuthGuard listener sẽ fire sau và setSession lại cùng session (no-op).
+      if (data.session) {
+        useAuthStore.getState().setSession(data.session);
       }
 
-      // Đợi session được persist vào localStorage rồi redirect ngay
-      console.log('[Login] Login API success, checking session...');
+      // Fire-and-forget last_login_at — không block redirect
+      updateLastLoginAt();
 
-      // Đợi một chút để authClient persist session
-      await new Promise(resolve => setTimeout(resolve, 300));
-
-      // Redirect ngay với window.location để tránh race condition với React state
-      const target = safeNext(params.get('next'));
-      const basename = window.location.pathname.startsWith('/hubibo') ? '/hubibo' : '';
-      console.log('[Login] Redirecting to:', basename + target);
-      window.location.href = basename + target;
+      // KHÔNG setSubmitting(false) ở đây: session state sẽ update qua
+      // onAuthStateChange, component re-render với `if (session)` trigger
+      // <Navigate>, component unmount. Nếu setSubmitting(false) trước
+      // navigate, có thể flash form empty 1 nhịp.
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Đăng nhập thất bại');
       setSubmitting(false);

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
+import { createFacadeStorage } from '@/lib/plugin-storage/zustand-adapter';
 
 // ============================================================
 // Agency Studio — UI state store
@@ -92,9 +93,13 @@ export const useAgencyStudioStore = create<AgencyStudioState>()(
         set({ wizardStep: 1, draftCampaign: defaultDraft }),
     }),
     {
-      name: 'agency-studio:store',
+      // `name` được zustand truyền vào adapter method nhưng facade ignore
+      // (adapter build key theo toolId). Giữ để zustand không complain.
+      name: 'agency-studio',
       version: 1,
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(() =>
+        createFacadeStorage({ toolId: 'agency-studio', scope: 'user' }),
+      ),
       // Chỉ persist wizardStep + draftCampaign để user reload giữa tạo
       // campaign vẫn tiếp được. Set/filter không cần persist.
       partialize: (state) => ({
@@ -103,4 +108,4 @@ export const useAgencyStudioStore = create<AgencyStudioState>()(
       }),
     },
   ),
-);
+);

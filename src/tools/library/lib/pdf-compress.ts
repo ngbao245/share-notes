@@ -24,6 +24,7 @@ import type {
   CompressionLevel,
   IlovepdfKeyEntry,
 } from '@/api/settingsApi';
+import { createToolStorage } from '@/lib/plugin-storage';
 
 export type CompressConfig = CompressConfigValue;
 
@@ -81,8 +82,6 @@ const BASE_URL = 'https://api.ilovepdf.com';
 const DEFAULT_TIMEOUT_MS = 120_000;
 const PDF_MAGIC = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]); // %PDF-
 
-const EXHAUSTED_STORAGE_KEY = 'ilovepdf_exhausted_keys';
-
 interface ExhaustedState {
   /** YYYY-MM format */
   month: string;
@@ -90,48 +89,41 @@ interface ExhaustedState {
   keys: string[];
 }
 
+// User-scope: quota tracking per user (mỗi user có credit riêng qua key họ cấp).
+const exhaustedStorage = createToolStorage<ExhaustedState>({
+  toolId: 'library',
+  key: 'pdf-compress-exhausted',
+  scope: 'user',
+});
+
 function currentMonth(): string {
   const d = new Date();
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
 function readExhausted(): Set<string> {
-  try {
-    const raw = localStorage.getItem(EXHAUSTED_STORAGE_KEY);
-    if (!raw) return new Set();
-    const state = JSON.parse(raw) as ExhaustedState;
-    if (state.month !== currentMonth()) {
-      // Qua tháng mới → clear exhausted list (credit reset)
-      localStorage.removeItem(EXHAUSTED_STORAGE_KEY);
-      return new Set();
-    }
-    return new Set(state.keys);
-  } catch {
+  const state = exhaustedStorage.get();
+  if (!state) return new Set();
+  if (state.month !== currentMonth()) {
+    // Qua tháng mới → clear exhausted list (credit reset)
+    exhaustedStorage.remove();
     return new Set();
   }
+  return new Set(state.keys);
 }
 
 function markExhausted(publicKey: string): void {
-  try {
-    const set = readExhausted();
-    set.add(publicKey);
-    const state: ExhaustedState = {
-      month: currentMonth(),
-      keys: Array.from(set),
-    };
-    localStorage.setItem(EXHAUSTED_STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // localStorage quota exceeded → ignore
-  }
+  const set = readExhausted();
+  set.add(publicKey);
+  exhaustedStorage.set({
+    month: currentMonth(),
+    keys: Array.from(set),
+  });
 }
 
 /** Clear exhausted state (dùng cho debug hoặc user reset manual). */
 export function clearExhaustedKeys(): void {
-  try {
-    localStorage.removeItem(EXHAUSTED_STORAGE_KEY);
-  } catch {
-    // ignore
-  }
+  exhaustedStorage.remove();
 }
 
 /** Snapshot state cho UI hiển thị (Setting tab). */

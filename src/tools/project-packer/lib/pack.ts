@@ -18,18 +18,6 @@ import { serializeFile, wrapPart, MARKERS } from './format';
 const WRAPPER_OVERHEAD =
   MARKERS.PACK_START.length + MARKERS.PACK_END.length + 2; // 2 \n
 
-/** File được phép cắt thành nhiều chunks khi quá lớn. */
-const CHUNKABLE_BASENAMES = new Set(['package-lock.json']);
-
-/** Lấy basename từ path (last segment). */
-function basename(path: string): string {
-  return path.split('/').pop() ?? path;
-}
-
-function isChunkable(path: string): boolean {
-  return CHUNKABLE_BASENAMES.has(basename(path));
-}
-
 /**
  * Cắt 1 file lớn thành N chunks. Chỉ áp dụng cho file trong whitelist.
  * Mỗi chunk có cùng path + meta `CHUNK: i/N`.
@@ -61,10 +49,12 @@ function chunkLargeFile(file: PackedFile, maxCharsPerPart: number): PackedFile[]
 }
 
 export async function packFiles(files: PackedFile[], options: PackOptions): Promise<PackPart[]> {
-  // Expand whitelist large files thành chunks trước khi greedy fit
+  // Expand large files thành chunks trước khi greedy fit.
+  // Bất kỳ file nào content > 85% maxCharsPerPart sẽ bị chunk — không giới hạn whitelist.
+  const chunkThreshold = Math.floor(options.maxCharsPerPart * 0.85);
   const expanded: PackedFile[] = [];
   for (const file of files) {
-    if (isChunkable(file.path)) {
+    if (file.content.length > chunkThreshold) {
       expanded.push(...chunkLargeFile(file, options.maxCharsPerPart));
     } else {
       expanded.push(file);
@@ -134,7 +124,7 @@ function buildPart(index: number, body: string, fileNames: string[]): PackPart {
 // Đọc từng file 1, yield giữa mỗi file để browser xử lý event.
 // ============================================================
 
-const MAX_FILE_SIZE = 200 * 1024; // 200KB
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB — auto-chunk sẽ chia nhỏ khi pack
 
 /** File quá lớn vẫn cho phép đọc (sẽ tự chunk khi pack). */
 export const LARGE_FILE_WHITELIST = new Set(['package-lock.json']);

@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 
 import { authClient } from '@/lib/authClient';
 import { useAuthStore } from '@/stores/authStore';
+import { useLogout } from '@/hooks/useLogout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
@@ -23,6 +24,7 @@ function isValidEmail(email: string): boolean {
 export default function ProfileTab() {
   const session = useAuthStore((s) => s.session);
   const profile = useAuthStore((s) => s.profile);
+  const logout = useLogout();
   const currentEmail = session?.user.email ?? '';
   const usingFakeEmail = isFakeEmail(currentEmail);
 
@@ -32,7 +34,7 @@ export default function ProfileTab() {
   const [saving, setSaving] = useState(false);
 
   async function handleLogout() {
-    await authClient.auth.signOut();
+    await logout();
   }
 
   async function handleSaveEmail() {
@@ -61,7 +63,9 @@ export default function ProfileTab() {
         toast.error(error.message);
         return;
       }
-      toast.success('Đã cập nhật email');
+      // Supabase yêu cầu user confirm mail. Email chưa đổi thật cho tới khi
+      // user click link trong inbox → feedback rõ để user không hiểu nhầm.
+      toast.success(`Đã gửi email xác nhận đến ${email}. Check inbox để hoàn tất.`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Update fail');
     } finally {
@@ -169,4 +173,4 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
       <dd className="text-foreground">{value}</dd>
     </div>
   );
-}
+}

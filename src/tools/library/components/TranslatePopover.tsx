@@ -5,14 +5,15 @@ import {
   translate,
   type TranslateResult,
 } from '@/tools/library/lib/translate';
+import { createToolStorage } from '@/lib/plugin-storage';
 
 interface Props {
   text: string;
   onClose: () => void;
 }
 
-const TARGET_KEY = 'reader_translate_target';
-const REMOVE_LINEBREAK_KEY = 'reader_translate_remove_linebreak';
+const targetStorage = createToolStorage<string>({ toolId: 'library', key: 'translate-target', scope: 'global' });
+const removeLinebreakStorage = createToolStorage<boolean>({ toolId: 'library', key: 'translate-remove-linebreak', scope: 'global' });
 
 function normalizeText(text: string, removeLinebreak: boolean) {
   if (!removeLinebreak) return text;
@@ -28,20 +29,16 @@ function isAbortError(error: unknown) {
 }
 
 export default function TranslatePopover({ text, onClose }: Props) {
-  const [target, setTarget] = useState(
-    () => localStorage.getItem(TARGET_KEY) || 'vi',
-  );
+  const [target, setTarget] = useState(() => targetStorage.get() || 'vi');
 
   const [removeLinebreak, setRemoveLinebreak] = useState(() => {
-    const stored = localStorage.getItem(REMOVE_LINEBREAK_KEY);
-    return stored !== 'false';
+    // Default true (giữ nguyên hành vi cũ: `stored !== 'false'`).
+    const stored = removeLinebreakStorage.get();
+    return stored !== false;
   });
 
   const [editedText, setEditedText] = useState(() =>
-    normalizeText(
-      text,
-      localStorage.getItem(REMOVE_LINEBREAK_KEY) !== 'false',
-    ),
+    normalizeText(text, removeLinebreakStorage.get() !== false),
   );
 
   const [result, setResult] = useState<TranslateResult | null>(null);
@@ -72,14 +69,11 @@ export default function TranslatePopover({ text, onClose }: Props) {
   }, [text]);
 
   useEffect(() => {
-    localStorage.setItem(TARGET_KEY, target);
+    targetStorage.set(target);
   }, [target]);
 
   useEffect(() => {
-    localStorage.setItem(
-      REMOVE_LINEBREAK_KEY,
-      String(removeLinebreak),
-    );
+    removeLinebreakStorage.set(removeLinebreak);
   }, [removeLinebreak]);
 
   useEffect(() => {
