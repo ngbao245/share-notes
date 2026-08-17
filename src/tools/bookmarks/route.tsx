@@ -11,25 +11,15 @@ import {
   Settings,
   X,
 } from 'lucide-react';
-import {
-  DndContext,
-  DragOverlay,
-  KeyboardSensor,
-  PointerSensor,
-  closestCenter,
-  useSensor,
-  useSensors,
-  useDroppable,
-  type DragEndEvent,
-  type DragStartEvent,
-} from '@dnd-kit/core';
-import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import BookmarkFavicon from './components/BookmarkFavicon';
+import { monitorForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
+import { extractClosestEdge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge';
+import { dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
 import BookmarksSkeleton from './components/BookmarksSkeleton';
 import { BookmarkOverlay } from './components/BookmarkBackground';
 import { BookmarkHeader } from './components/BookmarkHeader';
 import { getPublicUrl } from '@/lib/basename';
 import { BookmarkStatusBar } from './components/BookmarkStatusBar';
+import { cn } from '@/lib/cn';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -39,7 +29,7 @@ import { Popover, PopoverContent, PopoverTrigger, PopoverClose } from '@/compone
 import { EmptyState, ErrorState } from '@/components/shared';
 import { useAuthStore } from '@/stores/authStore';
 import { useQueryClient } from '@tanstack/react-query';
-import { workspaceRpc } from '@/lib/workspace/client';
+import { workspaceRpc, workspaceInsert } from '@/lib/workspace/client';
 
 import {
   QK,
@@ -66,12 +56,44 @@ import CustomCssEditor from './components/CustomCssEditor';
 import type { Bookmark, BookmarkCategory } from './types';
 import { CATEGORY_NAME_MAX } from './schemas';
 import { fetchBookmarkMeta } from './lib/edge-functions';
+import {
+  isBookmarkPayload,
+  isCategoryPayload,
+} from './lib/pdnd-types';
 
 // ============================================================
 // BookmarksEdit — main edit page (owner)
+//
+// Drag-and-drop powered by `@atlaskit/pragmatic-drag-and-drop`:
+//   - draggable / dropTarget declarations live inside BookmarkItem &
+//     CategoryBlock (per-element useEffect).
+//   - A single top-level `monitorForElements` here observes all drops and
+//     commits the reorder to Zustand/TanStack Query cache.
+//   - Visual state (dragging, closest edge) tracked as data-* attributes
+//     via CSS — no React state cascade during drag → smooth 60fps.
 // ============================================================
 
 const OPEN_ALL_CONFIRM_THRESHOLD = 10;
+
+const EMPTY_BOOKMARKS: Bookmark[] = [];
+
+// Temp ID prefix cho pending category tạo trong edit mode (chưa commit lên
+// server). Save button collect items có prefix này → gọi createCategory
+// mutation để tạo thật. Cancel → filter chúng khỏi cache.
+//
+// Prefix `__pending_cat_` khác với `temp_cat_` mà `useCreateCategory` dùng
+// cho optimistic update → không nhầm 2 cái với nhau.
+const TEMP_CAT_PREFIX = '__pending_cat_';
+const isTempCatId = (id: string) => id.startsWith(TEMP_CAT_PREFIX);
+
+// Chọn column có ít category nhất để append category mới. Same logic
+// with `pickShortestColumn` trong api.ts (không exported, inline here).
+function pickShortestColumn(cats: BookmarkCategory[], colCount: number): number {
+  const counts = Array.from({ length: colCount }, (_, i) =>
+    cats.filter((c) => c.columnIndex === i).length,
+  );
+  return counts.indexOf(Math.min(...counts));
+}
 
 export default function BookmarksEdit() {
   const authProfile = useAuthStore((s) => s.profile);
@@ -105,9 +127,8 @@ export default function BookmarksEdit() {
   const [hoverTitleByCat, setHoverTitleByCat] = useState<Record<string, string | null>>({});
   const [newCategoryName, setNewCategoryName] = useState('');
   const searchRef = useRef<HTMLInputElement>(null);
+
   // Snapshot only fields that are DEFERRED in edit mode.
-  // Bookmark content (title/url/note/favicon) is committed immediately via
-  // edit dialog and should NOT be rolled back on Cancel.
   const [snapshot, setSnapshot] = useState<{
     categories: Map<string, { orderIndex: number; columnIndex: number; name: string; hiddenFromPublic: boolean }>;
     bookmarks: Map<string, { orderIndex: number; categoryId: string }>;
@@ -115,8 +136,7 @@ export default function BookmarksEdit() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [cssEditorOpen, setCssEditorOpen] = useState(false);
 
-  // Auto-create profile on first visit
-  // Reset edit mode on mount — prevents stale state after route navigation.
+  // Reset edit mode on mount
   useEffect(() => {
     setEditMode(false);
   }, [setEditMode]);
@@ -153,35 +173,9 @@ export default function BookmarksEdit() {
     return () => window.removeEventListener('keydown', onKey);
   }, [setSearch]);
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-    useSensor(KeyboardSensor),
-  );
-
-  // Track active drag for DragOverlay preview
-  const [activeDrag, setActiveDrag] = useState<
-    | { type: 'category'; category: BookmarkCategory }
-    | { type: 'bookmark'; bookmark: Bookmark }
-    | null
-  >(null);
-
-  function handleDragStart(event: DragStartEvent) {
-    const data = event.active.data.current as { type?: string } | undefined;
-    if (data?.type === 'category-drag') {
-      const cat = categories.find((c) => `cat:${c.id}` === event.active.id);
-      if (cat) setActiveDrag({ type: 'category', category: cat });
-    } else if (data?.type === 'bookmark') {
-      const bm = bookmarks.find((b) => b.id === event.active.id);
-      if (bm) setActiveDrag({ type: 'bookmark', bookmark: bm });
-    }
-  }
-
   const categories = useMemo(() => categoriesQuery.data ?? [], [categoriesQuery.data]);
   const bookmarks = useMemo(() => bookmarksQuery.data ?? [], [bookmarksQuery.data]);
 
-  // Retry favicon enrichment for bookmarks where the initial fetch was aborted
-  // (e.g. user refreshed page while add-bookmark was still enriching in background).
-  // Tracks per-session so we don't loop for permanently-failed URLs.
   useEffect(() => {
     const targets = bookmarks.filter(
       (b) =>
@@ -204,7 +198,7 @@ export default function BookmarksEdit() {
           }
         })
         .catch(() => {
-          // ignore — will retry next session
+          // ignore
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -238,49 +232,8 @@ export default function BookmarksEdit() {
     };
   }, [search, bookmarksByCategory, matchesSearch]);
 
-  function handleQuickAdd(categoryId: string, url: string) {
-    createBookmark.mutate({ categoryId, url });
-  }
-
-  function handleOpenAll(cat: BookmarkCategory) {
-    const list = bookmarksByCategory.get(cat.id) ?? [];
-    if (list.length === 0) return;
-    if (list.length > OPEN_ALL_CONFIRM_THRESHOLD) {
-      if (!window.confirm(`Mở ${list.length} tab? Trình duyệt có thể chặn popup.`)) return;
-    }
-    const target = profileData?.openInSameTab ? '_self' : '_blank';
-    for (const b of list) window.open(b.url, target, 'noopener,noreferrer');
-  }
-
-  function handleDeleteCategory(cat: BookmarkCategory) {
-    const count = bookmarksByCategory.get(cat.id)?.length ?? 0;
-    const msg =
-      count > 0
-        ? `Xoá category "${cat.name}" và ${count} bookmark bên trong?`
-        : `Xoá category "${cat.name}"?`;
-    if (!window.confirm(msg)) return;
-    deleteCategory.mutate(cat.id, {
-      onSuccess: () => toast.success('Đã xoá category'),
-      onError: (e) => toast.error('Lỗi xoá: ' + (e as Error).message),
-    });
-  }
-
-  function submitNewCategory(e: FormEvent) {
-    e.preventDefault();
-    const name = newCategoryName.trim();
-    if (!name) return;
-    createCategory.mutate(
-      { name },
-      {
-        onSuccess: () => toast.success('Đã tạo category'),
-        onError: (e) => toast.error('Lỗi tạo: ' + (e as Error).message),
-      },
-    );
-    setNewCategoryName('');
-  }
-
   // ============================================================
-  // Edit mode: deferred cache-only mutations for reorder/rename/toggle
+  // Local cache mutators (deferred in edit mode)
   // ============================================================
 
   function applyCategoryPatchLocal(id: string, patch: Partial<BookmarkCategory>) {
@@ -325,6 +278,237 @@ export default function BookmarksEdit() {
     );
   }
 
+  // ============================================================
+  // PDND: top-level monitor for reorder commit on drop
+  //
+  // Use commitRef pattern to keep monitor subscribed ONCE while still
+  // accessing latest categories/bookmarks/editMode via closure.
+  // ============================================================
+
+  const commitRef = useRef<((source: Record<string, unknown>, target: Record<string, unknown> | null) => void) | null>(null);
+
+  commitRef.current = (source, target) => {
+    if (!target) return;
+
+    // ----- Bookmark drop -----
+    if (isBookmarkPayload(source)) {
+      const activeBookmark = bookmarks.find((b) => b.id === source.id);
+      if (!activeBookmark) return;
+
+      let targetCategoryId: string;
+      let insertIdx: number;
+
+      if (isBookmarkPayload(target)) {
+        if (target.id === source.id) return; // dropped on self
+        targetCategoryId = target.categoryId;
+        const edge = extractClosestEdge(target);
+        const catBms = (bookmarksByCategory.get(targetCategoryId) ?? []).filter(
+          (b) => b.id !== source.id,
+        );
+        const overIdx = catBms.findIndex((b) => b.id === target.id);
+        if (overIdx === -1) return;
+        insertIdx = overIdx + (edge === 'right' ? 1 : 0);
+      } else if (target.type === 'category-tail' && typeof target.categoryId === 'string') {
+        targetCategoryId = target.categoryId;
+        const catBms = (bookmarksByCategory.get(targetCategoryId) ?? []).filter(
+          (b) => b.id !== source.id,
+        );
+        insertIdx = catBms.length; // append
+      } else {
+        return; // unknown drop target
+      }
+
+      // Skip no-op: same category + same effective position
+      if (activeBookmark.categoryId === targetCategoryId) {
+        const sourceCatBms = bookmarksByCategory.get(activeBookmark.categoryId) ?? [];
+        const sourceIdx = sourceCatBms.findIndex((b) => b.id === source.id);
+        if (sourceIdx === insertIdx) return;
+      }
+
+      const targetList = (bookmarksByCategory.get(targetCategoryId) ?? []).filter(
+        (b) => b.id !== source.id,
+      );
+      const nextTarget = [...targetList];
+      nextTarget.splice(insertIdx, 0, { ...activeBookmark, categoryId: targetCategoryId });
+      const payload = nextTarget.map((b, idx) => ({
+        id: b.id,
+        orderIndex: idx,
+        categoryId: b.id === source.id ? targetCategoryId : undefined,
+      }));
+
+      if (editMode) {
+        applyReorderBookmarksLocal(payload);
+      } else {
+        reorderBookmarks.mutate(payload);
+      }
+      return;
+    }
+
+    // ----- Category drop -----
+    if (isCategoryPayload(source)) {
+      const activeCat = categories.find((c) => c.id === source.id);
+      if (!activeCat) return;
+
+      let targetColumn: number;
+      let insertIdx: number;
+
+      if (isCategoryPayload(target)) {
+        if (target.id === source.id) return;
+        targetColumn = target.columnIndex;
+        const edge = extractClosestEdge(target);
+        const colCats = categories
+          .filter((c) => c.columnIndex === targetColumn && c.id !== source.id)
+          .sort((a, b) => a.orderIndex - b.orderIndex);
+        const overIdx = colCats.findIndex((c) => c.id === target.id);
+        if (overIdx === -1) return;
+        insertIdx = overIdx + (edge === 'bottom' ? 1 : 0);
+      } else if (target.type === 'column-container' && typeof target.columnIndex === 'number') {
+        targetColumn = target.columnIndex;
+        const colCats = categories
+          .filter((c) => c.columnIndex === targetColumn && c.id !== source.id)
+          .sort((a, b) => a.orderIndex - b.orderIndex);
+        insertIdx = colCats.length;
+      } else {
+        return;
+      }
+
+      // Skip no-op
+      if (activeCat.columnIndex === targetColumn) {
+        const sourceColCats = categories
+          .filter((c) => c.columnIndex === activeCat.columnIndex)
+          .sort((a, b) => a.orderIndex - b.orderIndex);
+        const sourceIdx = sourceColCats.findIndex((c) => c.id === source.id);
+        // In this column, insertIdx is in list-without-source. sourceIdx is in
+        // list-WITH-source. Compare properly.
+        const sourceIdxInWithout = sourceIdx; // already effectively without after filter of source
+        if (sourceIdxInWithout === insertIdx) return;
+      }
+
+      const targetList = categories
+        .filter((c) => c.columnIndex === targetColumn && c.id !== source.id)
+        .sort((a, b) => a.orderIndex - b.orderIndex);
+      const nextTarget = [...targetList];
+      nextTarget.splice(insertIdx, 0, { ...activeCat, columnIndex: targetColumn });
+
+      const payload: Array<{ id: string; orderIndex: number; columnIndex?: number }> = [];
+      nextTarget.forEach((c, idx) => {
+        payload.push({
+          id: c.id,
+          orderIndex: idx,
+          columnIndex: c.id === source.id ? targetColumn : undefined,
+        });
+      });
+
+      // Re-order source column if cross-column
+      if (targetColumn !== activeCat.columnIndex) {
+        const sourceList = categories
+          .filter((c) => c.columnIndex === activeCat.columnIndex && c.id !== source.id)
+          .sort((a, b) => a.orderIndex - b.orderIndex);
+        sourceList.forEach((c, idx) => {
+          payload.push({ id: c.id, orderIndex: idx });
+        });
+      }
+
+      if (editMode) {
+        applyReorderCategoriesLocal(payload);
+      } else {
+        reorderCategories.mutate(payload);
+      }
+    }
+  };
+
+  useEffect(() => {
+    return monitorForElements({
+      onDrop: ({ source, location }) => {
+        const target = location.current.dropTargets[0]?.data ?? null;
+        commitRef.current?.(source.data, target);
+      },
+    });
+  }, []); // subscribed once
+
+  // ============================================================
+  // Handlers (non-DnD)
+  // ============================================================
+
+  function handleQuickAdd(categoryId: string, url: string) {
+    if (isTempCatId(categoryId)) {
+      toast.error('Vui lòng Save category trước khi thêm bookmark');
+      return;
+    }
+    createBookmark.mutate({ categoryId, url });
+  }
+
+  function handleOpenAll(cat: BookmarkCategory) {
+    const list = bookmarksByCategory.get(cat.id) ?? [];
+    if (list.length === 0) return;
+    if (list.length > OPEN_ALL_CONFIRM_THRESHOLD) {
+      if (!window.confirm(`Mở ${list.length} tab? Trình duyệt có thể chặn popup.`)) return;
+    }
+    const target = profileData?.openInSameTab ? '_self' : '_blank';
+    for (const b of list) window.open(b.url, target, 'noopener,noreferrer');
+  }
+
+  function handleDeleteCategory(cat: BookmarkCategory) {
+    const count = bookmarksByCategory.get(cat.id)?.length ?? 0;
+    const msg =
+      count > 0
+        ? `Xoá category "${cat.name}" và ${count} bookmark bên trong?`
+        : `Xoá category "${cat.name}"?`;
+    if (!window.confirm(msg)) return;
+
+    // Temp cat (chưa commit lên server) → chỉ xóa cache, không fire API
+    if (isTempCatId(cat.id)) {
+      qc.setQueryData<BookmarkCategory[]>(QK.categories(), (old) =>
+        (old ?? []).filter((c) => c.id !== cat.id),
+      );
+      // Cascade: xóa luôn bookmarks trong temp cat (nếu có)
+      qc.setQueryData<Bookmark[]>(QK.items(), (old) =>
+        (old ?? []).filter((b) => b.categoryId !== cat.id),
+      );
+      return;
+    }
+
+    deleteCategory.mutate(cat.id, {
+      onSuccess: () => toast.success('Đã xoá category'),
+      onError: (e) => toast.error('Lỗi xoá: ' + (e as Error).message),
+    });
+  }
+
+  function submitNewCategory(e: FormEvent) {
+    e.preventDefault();
+    const name = newCategoryName.trim();
+    if (!name) return;
+
+    if (editMode) {
+      // Defer: chỉ add vào cache với temp ID. Commit lên server khi Save.
+      const colIdx = pickShortestColumn(categories, columnCount);
+      const orderIndex = categories.filter((c) => c.columnIndex === colIdx).length;
+      const now = new Date().toISOString();
+      const tempCat: BookmarkCategory = {
+        id: `${TEMP_CAT_PREFIX}${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        userId: authProfile?.id ?? '',
+        name,
+        columnIndex: colIdx,
+        orderIndex,
+        hiddenFromPublic: false,
+        createdAt: now,
+        updatedAt: now,
+      };
+      qc.setQueryData<BookmarkCategory[]>(QK.categories(), (old) => [...(old ?? []), tempCat]);
+      setNewCategoryName('');
+      return;
+    }
+
+    createCategory.mutate(
+      { name },
+      {
+        onSuccess: () => toast.success('Đã tạo category'),
+        onError: (e) => toast.error('Lỗi tạo: ' + (e as Error).message),
+      },
+    );
+    setNewCategoryName('');
+  }
+
   function handleEnterEditMode() {
     setSnapshot({
       categories: new Map(
@@ -347,26 +531,32 @@ export default function BookmarksEdit() {
 
   function handleCancelEditMode() {
     if (snapshot) {
-      // Restore ONLY deferred fields; preserve other content changes (title/url/etc)
+      // Filter out temp cats (created trong edit mode) + restore deferred
+      // fields của các cat còn lại. Bookmarks trong temp cat cũng bị xóa
+      // (cascade — orphan bookmarks không có sense).
       qc.setQueryData<BookmarkCategory[]>(QK.categories(), (old) =>
-        (old ?? []).map((c) => {
-          const snap = snapshot.categories.get(c.id);
-          if (!snap) return c;
-          return {
-            ...c,
-            orderIndex: snap.orderIndex,
-            columnIndex: snap.columnIndex,
-            name: snap.name,
-            hiddenFromPublic: snap.hiddenFromPublic,
-          };
-        }),
+        (old ?? [])
+          .filter((c) => !isTempCatId(c.id))
+          .map((c) => {
+            const snap = snapshot.categories.get(c.id);
+            if (!snap) return c;
+            return {
+              ...c,
+              orderIndex: snap.orderIndex,
+              columnIndex: snap.columnIndex,
+              name: snap.name,
+              hiddenFromPublic: snap.hiddenFromPublic,
+            };
+          }),
       );
       qc.setQueryData<Bookmark[]>(QK.items(), (old) =>
-        (old ?? []).map((b) => {
-          const snap = snapshot.bookmarks.get(b.id);
-          if (!snap) return b;
-          return { ...b, orderIndex: snap.orderIndex, categoryId: snap.categoryId };
-        }),
+        (old ?? [])
+          .filter((b) => !isTempCatId(b.categoryId))
+          .map((b) => {
+            const snap = snapshot.bookmarks.get(b.id);
+            if (!snap) return b;
+            return { ...b, orderIndex: snap.orderIndex, categoryId: snap.categoryId };
+          }),
       );
     }
     setSnapshot(null);
@@ -380,9 +570,43 @@ export default function BookmarksEdit() {
     }
     setSavingEdit(true);
     try {
-      // Build batch items for categories
+      // === Step 1: Commit pending category creates ===
+      // Dùng workspaceInsert trực tiếp (bypass createCategory mutation) vì:
+      //   - createCategory.mutateAsync không nhận orderIndex, luôn append cuối
+      //   - Mutation optimistic update ghi đè cache → visual glitch (cat
+      //     nhảy về column mặc định) trước khi batch_update fix về vị trí đúng.
+      // Insert trực tiếp với FULL position user đã drag → server tạo đúng chỗ
+      // ngay lần đầu, không cần batch_update cột nữa.
+      const tempCats = categories.filter((c) => isTempCatId(c.id));
+      const catIdMap = new Map<string, string>(); // temp → real
+
+      for (const tempCat of tempCats) {
+        const row = await workspaceInsert<{ id: string }>('bookmark_categories', {
+          name: tempCat.name,
+          column_index: tempCat.columnIndex,
+          order_index: tempCat.orderIndex,
+          hidden_from_public: tempCat.hiddenFromPublic,
+        });
+        catIdMap.set(tempCat.id, row.id);
+      }
+
+      // Sau khi insert xong, thay temp ID trong cache bằng real ID → tránh
+      // visual glitch khi invalidate refetch cuối flow. Preserve position.
+      if (catIdMap.size > 0) {
+        qc.setQueryData<BookmarkCategory[]>(QK.categories(), (old) =>
+          (old ?? []).map((c) => {
+            const realId = catIdMap.get(c.id);
+            return realId ? { ...c, id: realId } : c;
+          }),
+        );
+      }
+
+      // === Step 2: Batch update existing categories (rename/reorder/toggle).
+      // Newly-created cats KHÔNG cần batch_update nữa vì đã insert với đúng
+      // position. Chỉ diff các cat có trong snapshot.
       const catItems: Array<{ id: string; patch: Record<string, unknown> }> = [];
       for (const c of categories) {
+        if (isTempCatId(c.id)) continue; // Skip temps — đã insert ở step 1
         const orig = snapshot.categories.get(c.id);
         if (!orig) continue;
         const patch: Record<string, unknown> = {};
@@ -393,18 +617,19 @@ export default function BookmarksEdit() {
         if (Object.keys(patch).length > 0) catItems.push({ id: c.id, patch });
       }
 
-      // Build batch items for bookmarks
       const bmItems: Array<{ id: string; patch: Record<string, unknown> }> = [];
       for (const b of bookmarks) {
         const orig = snapshot.bookmarks.get(b.id);
         if (!orig) continue;
         const patch: Record<string, unknown> = {};
         if (orig.orderIndex !== b.orderIndex) patch.order_index = b.orderIndex;
-        if (orig.categoryId !== b.categoryId) patch.category_id = b.categoryId;
+        if (orig.categoryId !== b.categoryId) {
+          // categoryId có thể trỏ tới temp cat → map sang real ID
+          patch.category_id = catIdMap.get(b.categoryId) ?? b.categoryId;
+        }
         if (Object.keys(patch).length > 0) bmItems.push({ id: b.id, patch });
       }
 
-      // All-or-nothing transaction per table (categories first, then bookmarks)
       if (catItems.length > 0) {
         await workspaceRpc('bookmark_batch_update', {
           p_table: 'bookmark_categories',
@@ -419,121 +644,21 @@ export default function BookmarksEdit() {
       }
 
       const totalChanges = catItems.length + bmItems.length;
-      if (totalChanges > 0) {
-        toast.success(`Đã lưu ${totalChanges} thay đổi`);
+      if (totalChanges > 0 || tempCats.length > 0) {
+        toast.success(`Đã lưu ${tempCats.length + totalChanges} thay đổi`);
       }
       setSnapshot(null);
       setEditMode(false);
+
+      // Final invalidate để sync state với server (đặc biệt cần cho newly-created)
+      qc.invalidateQueries({ queryKey: QK.categories() });
+      qc.invalidateQueries({ queryKey: QK.items() });
     } catch (e) {
       toast.error('Lỗi lưu: ' + (e as Error).message);
-      // Refetch to get actual server state after failed transaction
       qc.invalidateQueries({ queryKey: QK.categories() });
       qc.invalidateQueries({ queryKey: QK.items() });
     } finally {
       setSavingEdit(false);
-    }
-  }
-
-  function handleDragEnd(event: DragEndEvent) {
-    setActiveDrag(null);
-    const { active, over } = event;
-    if (!over) return;
-
-    const activeData = active.data.current as
-      | { type?: string; categoryId?: string; columnIndex?: number }
-      | undefined;
-    const overData = over.data.current as
-      | { type?: string; categoryId?: string; columnIndex?: number }
-      | undefined;
-
-    if (activeData?.type === 'category-drag') {
-      const activeCat = categories.find((c) => `cat:${c.id}` === active.id);
-      if (!activeCat) return;
-
-      let targetColumn = activeCat.columnIndex;
-      let overCat: BookmarkCategory | undefined;
-
-      if (overData?.type === 'column-drop' && typeof overData.columnIndex === 'number') {
-        targetColumn = overData.columnIndex;
-      } else if (overData?.type === 'category-drag') {
-        overCat = categories.find((c) => `cat:${c.id}` === over.id);
-        if (overCat) targetColumn = overCat.columnIndex;
-      } else {
-        return;
-      }
-
-      const targetList = categories
-        .filter((c) => c.columnIndex === targetColumn && c.id !== activeCat.id)
-        .sort((a, b) => a.orderIndex - b.orderIndex);
-      let insertIdx = targetList.length;
-      if (overCat) {
-        insertIdx = targetList.findIndex((c) => c.id === overCat!.id);
-        if (insertIdx === -1) insertIdx = targetList.length;
-      }
-      const nextTarget = [...targetList];
-      nextTarget.splice(insertIdx, 0, { ...activeCat, columnIndex: targetColumn });
-
-      const payload: Array<{ id: string; orderIndex: number; columnIndex?: number }> = [];
-      nextTarget.forEach((c, idx) => {
-        payload.push({
-          id: c.id,
-          orderIndex: idx,
-          columnIndex: c.id === activeCat.id ? targetColumn : undefined,
-        });
-      });
-
-      if (activeCat.columnIndex !== targetColumn) {
-        const sourceList = categories
-          .filter((c) => c.columnIndex === activeCat.columnIndex && c.id !== activeCat.id)
-          .sort((a, b) => a.orderIndex - b.orderIndex);
-        sourceList.forEach((c, idx) => {
-          payload.push({ id: c.id, orderIndex: idx });
-        });
-      }
-
-      if (editMode) {
-        applyReorderCategoriesLocal(payload);
-      } else {
-        reorderCategories.mutate(payload);
-      }
-      return;
-    }
-
-    if (activeData?.type === 'bookmark') {
-      const activeId = active.id as string;
-      const activeBookmark = bookmarks.find((b) => b.id === activeId);
-      if (!activeBookmark) return;
-
-      let targetCategoryId = activeBookmark.categoryId;
-      let overBookmark: Bookmark | undefined;
-
-      if (overData?.type === 'category' && overData.categoryId) {
-        targetCategoryId = overData.categoryId;
-      } else if (overData?.type === 'bookmark' && overData.categoryId) {
-        overBookmark = bookmarks.find((b) => b.id === over.id);
-        targetCategoryId = overData.categoryId;
-      }
-
-      const currentTarget = (bookmarksByCategory.get(targetCategoryId) ?? []).filter(
-        (b) => b.id !== activeId,
-      );
-      let insertIdx = currentTarget.length;
-      if (overBookmark) {
-        insertIdx = currentTarget.findIndex((b) => b.id === overBookmark!.id);
-        if (insertIdx === -1) insertIdx = currentTarget.length;
-      }
-      const nextTarget = [...currentTarget];
-      nextTarget.splice(insertIdx, 0, { ...activeBookmark, categoryId: targetCategoryId });
-      const payload = nextTarget.map((b, idx) => ({
-        id: b.id,
-        orderIndex: idx,
-        categoryId: b.id === activeId ? targetCategoryId : undefined,
-      }));
-      if (editMode) {
-        applyReorderBookmarksLocal(payload);
-      } else {
-        reorderBookmarks.mutate(payload);
-      }
     }
   }
 
@@ -543,8 +668,7 @@ export default function BookmarksEdit() {
       return;
     }
 
-    // Build unique category list with temp IDs
-    const catNameSet = new Map<string, string>(); // lowercase name -> temp_id
+    const catNameSet = new Map<string, string>();
     let tempIdCounter = 0;
     const p_categories: Array<{ name: string; temp_id: string }> = [];
 
@@ -558,7 +682,6 @@ export default function BookmarksEdit() {
       }
     }
 
-    // Build bookmark list referencing temp category IDs
     const p_bookmarks = items.map((it) => {
       const cleanName = (it.category.trim().slice(0, CATEGORY_NAME_MAX) || 'Imported').toLowerCase();
       return {
@@ -571,7 +694,6 @@ export default function BookmarksEdit() {
     try {
       await workspaceRpc('bookmark_bulk_import', { p_categories, p_bookmarks });
       toast.success(`Import ${items.length} bookmark thành công`);
-      // Refetch all data after successful import
       qc.invalidateQueries({ queryKey: QK.categories() });
       qc.invalidateQueries({ queryKey: QK.items() });
     } catch (e) {
@@ -592,7 +714,6 @@ export default function BookmarksEdit() {
             <Skeleton className="h-8 w-8 rounded-full" />
           </div>
         </header>
-        {/* Status bar placeholder */}
         <div className="flex items-center gap-2 border-b border-border/50 px-4 py-1.5">
           <Skeleton className="h-4 w-14 rounded-full" />
           <Skeleton className="h-4 w-32 rounded" />
@@ -633,7 +754,6 @@ export default function BookmarksEdit() {
   const displayLabel =
     profileData?.displayName || authProfile?.username || profileData?.slug || 'User';
 
-  // Mobile stacks to 1 col; from md up honor user's exact column choice.
   const gridColsClass = ['', 'grid-cols-1', 'grid-cols-1 md:grid-cols-2', 'grid-cols-1 md:grid-cols-3', 'grid-cols-1 md:grid-cols-4'][columnCount];
 
   return (
@@ -648,25 +768,16 @@ export default function BookmarksEdit() {
           opacity={profileData?.backgroundOverlayOpacity ?? 0}
           blend={profileData?.backgroundBlendMode ?? 'normal'}
         />
-        {/* Header */}
         <header className="bibo-bookmark-header sticky top-0 z-10 border-b border-border/50 bg-background/80 backdrop-blur-xl">
           <div className="flex items-center gap-3 px-4 py-3">
-            <Button
-              variant="ghost"
-              size="icon"
-              asChild
-              aria-label="Về trang chủ"
-              className="h-8 w-8"
-            >
+            <Button variant="ghost" size="icon" asChild aria-label="Về trang chủ" className="h-8 w-8">
               <Link to="/">
                 <ArrowLeft className="h-4 w-4" />
               </Link>
             </Button>
 
             <div className="flex flex-col leading-none">
-              <h1 className="text-sm font-semibold tracking-tight text-foreground">
-                Bookmarks
-              </h1>
+              <h1 className="text-sm font-semibold tracking-tight text-foreground">Bookmarks</h1>
               {profileData && (
                 <span className="bibo-user-info mt-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
                   {displayLabel}
@@ -716,13 +827,11 @@ export default function BookmarksEdit() {
                   <PopoverContent align="end" side="bottom">
                     <form onSubmit={submitNewCategory} className="space-y-3">
                       <div className="space-y-1.5">
-                        <label className="text-xs font-medium text-muted-foreground">
-                          Tên category
-                        </label>
+                        <label className="text-xs font-medium text-muted-foreground">Tên category</label>
                         <Input
                           value={newCategoryName}
                           onChange={(e) => setNewCategoryName(e.target.value)}
-                          placeholder="VD: ⚙ Dev Tools"
+                          placeholder="VD: Dev Tools"
                           className="h-8 text-xs"
                           autoFocus
                           maxLength={CATEGORY_NAME_MAX}
@@ -730,9 +839,7 @@ export default function BookmarksEdit() {
                       </div>
                       <div className="flex justify-end gap-2">
                         <PopoverClose asChild>
-                          <Button variant="outline" size="sm" type="button" className="h-7 text-xs">
-                            Huỷ
-                          </Button>
+                          <Button variant="outline" size="sm" type="button" className="h-7 text-xs">Huỷ</Button>
                         </PopoverClose>
                         <PopoverClose asChild>
                           <Button size="sm" type="submit" className="h-7 gap-1 text-xs">
@@ -759,7 +866,6 @@ export default function BookmarksEdit() {
             </div>
           </div>
 
-          {/* Status bar — luôn hiện cho owner (management chrome, không gated by profile setting) */}
           {profileData && (
             <BookmarkStatusBar
               isPublic={pageIsPublic}
@@ -771,7 +877,6 @@ export default function BookmarksEdit() {
           )}
         </header>
 
-        {/* Body */}
         <div className="bibo-bookmark-content relative z-10 flex-1 overflow-y-auto p-4">
           {profileData && profileData.showHero && (
             <section className="mx-auto mb-4 w-[90%] max-w-[2250px] px-8">
@@ -796,113 +901,76 @@ export default function BookmarksEdit() {
               }
             />
           ) : (
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragStart={handleDragStart}
-              onDragEnd={handleDragEnd}
-              onDragCancel={() => setActiveDrag(null)}
+            <div
+              className={`mx-auto grid w-[90%] max-w-[2250px] gap-6 ${gridColsClass}`}
+              style={{
+                gridTemplateRows: `repeat(${Math.max(
+                  1,
+                  ...Array.from({ length: columnCount }, (_, i) =>
+                    categories.filter((c) => c.columnIndex === i).length,
+                  ),
+                )}, auto)`,
+              }}
             >
-              <div
-                className={`mx-auto grid w-[90%] max-w-[2250px] gap-6 ${gridColsClass}`}
-                style={{
-                  gridTemplateRows: `repeat(${Math.max(
-                    1,
-                    ...Array.from({ length: columnCount }, (_, i) =>
-                      categories.filter((c) => c.columnIndex === i).length,
-                    ),
-                  )}, auto)`,
-                }}
-              >
-                {Array.from({ length: columnCount }, (_, colIdx) => {
-                  const colCats = categories
-                    .filter((c) => c.columnIndex === colIdx)
-                    .sort((a, b) => a.orderIndex - b.orderIndex);
-                  return (
-                    <CategoryColumn
-                      key={colIdx}
-                      columnIndex={colIdx}
-                      categories={colCats}
-                      dropEnabled={activeDrag?.type === 'category'}
-                      renderCategory={(cat) => (
-                        <div
-                          key={cat.id}
-                          className="transition-opacity"
-                          style={{ opacity: categoryHasMatch(cat) ? 1 : 0.15 }}
-                        >
-                          <CategoryBlock
-                            category={cat}
-                            bookmarks={bookmarksByCategory.get(cat.id) ?? []}
-                            hoverTitle={hoverTitleByCat[cat.id] ?? null}
-                            matchesSearch={matchesSearch}
-                            iconSize={iconSize}
-                            iconBackdrop={profileData?.iconBackdrop ?? true}
-                            pageIsPublic={pageIsPublic}
-                            editMode={editMode}
-                            openInSameTab={openInSameTab}
-                            readOnly={!editMode}
-                            onEditBookmark={(b) => {
-                              setEditingBookmark(b);
-                              openDialog({ kind: 'bookmark-edit', bookmarkId: b.id });
-                            }}
-                            onHoverBookmark={(title) =>
-                              setHoverTitleByCat((prev) => ({ ...prev, [cat.id]: title }))
+              {Array.from({ length: columnCount }, (_, colIdx) => {
+                const colCats = categories
+                  .filter((c) => c.columnIndex === colIdx)
+                  .sort((a, b) => a.orderIndex - b.orderIndex);
+                return (
+                  <CategoryColumn key={colIdx} columnIndex={colIdx} readOnly={!editMode}>
+                    {colCats.map((cat) => (
+                      <div
+                        key={cat.id}
+                        className="transition-opacity"
+                        style={{ opacity: categoryHasMatch(cat) ? 1 : 0.15 }}
+                      >
+                        <CategoryBlock
+                          category={cat}
+                          bookmarks={bookmarksByCategory.get(cat.id) ?? EMPTY_BOOKMARKS}
+                          hoverTitle={hoverTitleByCat[cat.id] ?? null}
+                          matchesSearch={matchesSearch}
+                          iconSize={iconSize}
+                          iconBackdrop={profileData?.iconBackdrop ?? true}
+                          pageIsPublic={pageIsPublic}
+                          editMode={editMode}
+                          openInSameTab={openInSameTab}
+                          readOnly={!editMode}
+                          onEditBookmark={(b) => {
+                            setEditingBookmark(b);
+                            openDialog({ kind: 'bookmark-edit', bookmarkId: b.id });
+                          }}
+                          onHoverBookmark={(title) =>
+                            setHoverTitleByCat((prev) => ({ ...prev, [cat.id]: title }))
+                          }
+                          onQuickAdd={handleQuickAdd}
+                          onOpenAll={() => handleOpenAll(cat)}
+                          onToggleHidden={() => {
+                            if (editMode) {
+                              applyCategoryPatchLocal(cat.id, {
+                                hiddenFromPublic: !cat.hiddenFromPublic,
+                              });
+                            } else {
+                              updateCategory.mutate({
+                                id: cat.id,
+                                hiddenFromPublic: !cat.hiddenFromPublic,
+                              });
                             }
-                            onQuickAdd={handleQuickAdd}
-                            onOpenAll={() => handleOpenAll(cat)}
-                            onToggleHidden={() => {
-                              if (editMode) {
-                                applyCategoryPatchLocal(cat.id, {
-                                  hiddenFromPublic: !cat.hiddenFromPublic,
-                                });
-                              } else {
-                                updateCategory.mutate({
-                                  id: cat.id,
-                                  hiddenFromPublic: !cat.hiddenFromPublic,
-                                });
-                              }
-                            }}
-                            onRename={(name) => {
-                              if (editMode) {
-                                applyCategoryPatchLocal(cat.id, { name });
-                              } else {
-                                updateCategory.mutate({ id: cat.id, name });
-                              }
-                            }}
-                            onDelete={() => handleDeleteCategory(cat)}
-                          />
-                        </div>
-                      )}
-                    />
-                  );
-                })}
-              </div>
-
-              {/* DragOverlay — ghost that follows cursor */}
-              <DragOverlay dropAnimation={{ duration: 180 }}>
-                {activeDrag?.type === 'bookmark' && (
-                  <BookmarkFavicon
-                    faviconUrl={activeDrag.bookmark.faviconUrl}
-                    title={activeDrag.bookmark.title}
-                    url={activeDrag.bookmark.url}
-                    size={iconSize}
-                    backdrop={profileData?.iconBackdrop ?? true}
-                    iconType={activeDrag.bookmark.iconType}
-                    iconText={activeDrag.bookmark.iconText}
-                    iconRounded={activeDrag.bookmark.iconRounded}
-                    iconBackground={activeDrag.bookmark.iconBackground}
-                    className="ring-2 ring-primary shadow-lg"
-                  />
-                )}
-                {activeDrag?.type === 'category' && (
-                  <div className="rounded-xl border border-primary/40 bg-card px-3 py-2 shadow-xl">
-                    <span className="inline-flex items-center rounded-full border border-primary/20 bg-primary/10 px-3 py-0.5 text-[11px] font-medium text-primary">
-                      {activeDrag.category.name}
-                    </span>
-                  </div>
-                )}
-              </DragOverlay>
-            </DndContext>
+                          }}
+                          onRename={(name) => {
+                            if (editMode) {
+                              applyCategoryPatchLocal(cat.id, { name });
+                            } else {
+                              updateCategory.mutate({ id: cat.id, name });
+                            }
+                          }}
+                          onDelete={() => handleDeleteCategory(cat)}
+                        />
+                      </div>
+                    ))}
+                  </CategoryColumn>
+                );
+              })}
+            </div>
           )}
         </div>
 
@@ -949,7 +1017,6 @@ export default function BookmarksEdit() {
           }
           onImport={handleImport}
           onOpenCssEditor={() => {
-            // Close settings modal but remember to reopen on CSS editor close
             closeDialog();
             setCssEditorOpen(true);
           }}
@@ -994,11 +1061,7 @@ export default function BookmarksEdit() {
               </Button>
             </>
           ) : (
-            <Button
-              size="sm"
-              onClick={handleEnterEditMode}
-              className="gap-1.5 shadow-lg"
-            >
+            <Button size="sm" onClick={handleEnterEditMode} className="gap-1.5 shadow-lg">
               <Pencil className="h-3.5 w-3.5" />
               Edit
             </Button>
@@ -1010,54 +1073,63 @@ export default function BookmarksEdit() {
 }
 
 // ============================================================
-// CategoryColumn — 1 of N columns
+// CategoryColumn — 1 of N columns. Simple wrapper that acts as
+// dropTarget for category-drag when column is empty (or cursor falls
+// between categories). Individual category BEFORE/AFTER handled by
+// CategoryBlock's own dropTarget with closest-edge.
 // ============================================================
 
 interface CategoryColumnProps {
   columnIndex: number;
-  categories: BookmarkCategory[];
-  dropEnabled: boolean;
-  renderCategory: (cat: BookmarkCategory) => React.ReactNode;
+  readOnly: boolean;
+  children: React.ReactNode;
 }
 
-function CategoryColumn({
-  columnIndex,
-  categories,
-  dropEnabled,
-  renderCategory,
-}: CategoryColumnProps) {
-  const { setNodeRef, isOver } = useDroppable({
-    id: `col-drop:${columnIndex}`,
-    data: { type: 'column-drop', columnIndex },
-    disabled: !dropEnabled,
-  });
+function CategoryColumn({ columnIndex, readOnly, children }: CategoryColumnProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  useEffect(() => {
+    if (readOnly) return;
+    const el = ref.current;
+    if (!el) return;
+
+    return dropTargetForElements({
+      element: el,
+      canDrop: ({ source }) => isCategoryPayload(source.data),
+      getData: () => ({
+        type: 'column-container',
+        columnIndex,
+      }),
+      onDragEnter: () => setDragOver(true),
+      onDragLeave: () => setDragOver(false),
+      onDrop: () => setDragOver(false),
+    });
+  }, [columnIndex, readOnly]);
+
+  const isEmpty = Array.isArray(children)
+    ? (children as React.ReactNode[]).filter(Boolean).length === 0
+    : !children;
+
   return (
-    <SortableContext
-      items={categories.map((c) => `cat:${c.id}`)}
-      strategy={verticalListSortingStrategy}
+    <div
+      ref={ref}
+      className={cn(
+        'bibo-bookmark-col grid min-h-[120px] gap-6 rounded-xl border border-dashed p-2 transition-colors duration-150 [grid-template-rows:subgrid] [grid-row:1/-1]',
+        dragOver && isEmpty
+          ? 'border-primary/50 bg-primary/5'
+          : isEmpty
+            ? 'border-border/40'
+            : 'border-transparent',
+      )}
     >
-      <div
-        ref={setNodeRef}
-        className={
-          'bibo-bookmark-col grid min-h-[120px] gap-6 rounded-xl border border-dashed p-2 transition-colors duration-150 [grid-template-rows:subgrid] [grid-row:1/-1] ' +
-          (isOver
-            ? 'border-primary/50 bg-primary/5'
-            : categories.length === 0
-              ? 'border-border/40'
-              : 'border-transparent')
-        }
-      >
-        {categories.map(renderCategory)}
-        {categories.length === 0 && (
-          <div className="flex flex-col items-center justify-center gap-1.5 py-8 text-center">
-            <FolderPlus className="h-4 w-4 text-muted-foreground/40" />
-            <p className="text-[11px] text-muted-foreground/60">Kéo category vào đây</p>
-          </div>
-        )}
-      </div>
-    </SortableContext>
+      {children}
+      {isEmpty && (
+        <div className="flex flex-col items-center justify-center gap-1.5 py-8 text-center">
+          <FolderPlus className="h-4 w-4 text-muted-foreground/40" />
+          <p className="text-[11px] text-muted-foreground/60">Kéo category vào đây</p>
+        </div>
+      )}
+    </div>
   );
 }
-
-// Keep tree-shake-safe reference
-

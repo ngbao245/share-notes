@@ -138,6 +138,72 @@ Save/Cancel buttons appear in edit mode. On enter, snapshot deferred fields:
 
 **Route mount**: `editMode` auto-resets to `false` on mount → prevents stale edit state after navigation.
 
+#### DnD interaction (rewrite 2026-08-13: pragmatic-drag-and-drop)
+
+Drag-and-drop MIGRATED từ `@dnd-kit` sang `@atlaskit/pragmatic-drag-and-drop` (PDND) để fix performance issues (dnd-kit `useSortable × N items × 60fps` = re-render cascade). PDND dùng browser-native HTML5 drag API + imperative DOM updates → không React state per drag frame.
+
+**Package deps:**
+- `@atlaskit/pragmatic-drag-and-drop` (core, ~4.7kB)
+- `@atlaskit/pragmatic-drag-and-drop-hitbox` (closest-edge module, ~1-2kB)
+- Total: ~7kB (vs `@dnd-kit/*` ~17kB — giảm ~10kB bundle)
+
+**Note**: `@dnd-kit/*` vẫn được giữ trong dependencies vì `pdf-studio` tool dùng. Chỉ bookmarks migrate.
+
+**Architecture:**
+
+Mỗi thành phần drag được declare qua `useEffect` với `draggable` / `dropTargetForElements` / `combine`:
+
+- **BookmarkItem** (`src/tools/bookmarks/components/BookmarkItem.tsx`):
+  - `draggable`: bookmark có thể pick up
+  - `dropTargetForElements`: nhận drop từ bookmark khác, dùng `attachClosestEdge({allowedEdges: ['left', 'right']})` để mark left/right insertion
+  - Local state: `dragging` (source), `edge` (target closest edge)
+  - Visual: line indicator qua CSS pseudo-elements `::before` (edge=left) / `::after` (edge=right) → **zero React state cascade** → indicator updates purely qua DOM data attribute
+
+- **CategoryBlock** (`src/tools/bookmarks/components/CategoryBlock.tsx`):
+  - Header row `draggable` với `type: 'category'`
+  - Category root `dropTargetForElements` với `attachClosestEdge({allowedEdges: ['top', 'bottom']})` cho category-drag
+  - Bookmark tail `<li>` = `dropTargetForElements` với `type: 'category-tail'` → nhận bookmark drop khi cursor ở tail area
+  - Line indicator TOP/BOTTOM qua data-cat-edge + CSS
+
+- **CategoryColumn** (trong `route.tsx`):
+  - `dropTargetForElements` với `type: 'column-container'` cho category-drag
+  - Chỉ trigger khi column empty (fallback drop position)
+
+- **Top-level monitor** (`route.tsx`):
+  - Single `monitorForElements` subscribe ONCE on mount
+  - Listens to all drops, extracts `closestEdge` from target data
+  - Commits reorder to Zustand/TanStack Query cache via `commitRef` pattern (fresh closures over latest state)
+
+**Drop position determination:**
+
+`attachClosestEdge` from `@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge` tự động tính closest edge của cursor tới drop target rect (left/right cho horizontal, top/bottom cho vertical). Stamp edge vào target data qua Symbol key → `extractClosestEdge(target.data)` returns edge trong onDrop handler.
+
+**Not needed anymore** (đã xóa):
+- Custom collision detection (`dnd-collision.ts`)
+- `dragOverCtx` React state (drop position lưu trong DOM data-* attribute)
+- Phantom bookmark clone (PDND custom drag preview qua `setCustomNativeDragPreview` — outside React tree)
+- `useSortable` per item — mỗi item chỉ có 1 useEffect subscribe DOM adapter
+- Line indicator IndicatorSlot component (replaced by CSS `::before`/`::after`)
+
+**Custom drag preview:** `setCustomNativeDragPreview` + `pointerOutsideOfPreview({x: '8px', y: '8px'})` — creates a native browser drag image outside React tree. For bookmark: ring-2 primary + favicon icon. For category: rounded pill badge.
+
+**Type isolation:** `canDrop` gate bookmark vs category drops:
+- Bookmark drop target chỉ accept `isBookmarkPayload(source.data)`
+- Category drop target chỉ accept `isCategoryPayload(source.data)`
+- Type guards định nghĩa trong `src/tools/bookmarks/lib/pdnd-types.ts`
+
+**Deferred save (edit mode):** giữ nguyên. Monitor's commit path dispatches to `applyReorderCategoriesLocal` / `applyReorderBookmarksLocal` (edit mode) hoặc `reorderCategories.mutate` / `reorderBookmarks.mutate` (view mode). Save button vẫn flush qua `bookmark_batch_update` RPC.
+
+**A11y gap:** PDND không có KeyboardSensor built-in như dnd-kit. Cho tool personal chấp nhận được. Có thể add `@atlaskit/pragmatic-drag-and-drop-react-accessibility` sau nếu cần.
+
+- **Sortable strategy**: bookmark grid dùng `rectSortingStrategy` (hỗ trợ flex-wrap layout). Category column vẫn `verticalListSortingStrategy`.
+
+- **DragOverlay ghost**: giữ nguyên favicon (bookmark) / badge (category) follow cursor với `ring-2 ring-primary shadow-lg`.
+
+- **Ngoại lệ khi cancel**: `onDragCancel` (Esc hoặc drop ngoài valid target) reset `activeDrag` + `dragOverCtx` → không commit.
+
+- **Deferred save trong edit mode**: reorder chỉ cập nhật local cache qua `applyReorderCategoriesLocal` / `applyReorderBookmarksLocal`. Save button flush qua `bookmark_batch_update` RPC. Cancel button rollback qua snapshot (giữ nguyên behavior cũ).
+
 ### Favicon strategy
 
 **Server-side fetch** (`fetch-bookmark-meta`): 5-tier cascade (see Edge Functions above). Uploads to Storage `{user_id}/domains/{domain}.png` (upsert).

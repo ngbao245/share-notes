@@ -237,6 +237,7 @@ export default function BookmarkFavicon({
           height={size - pad * 2}
           alt={title || url}
           decoding="async"
+          draggable={false}
           onError={() => setErrored(true)}
           className={`h-full w-full object-contain ${MORPH_INNER}`}
         />
@@ -258,6 +259,7 @@ export default function BookmarkFavicon({
           height={size}
           alt={title || url}
           decoding="async"
+          draggable={false}
           onError={() => setErrored(true)}
           className={`h-full w-full object-contain ${MORPH_INNER}`}
           style={{ padding: Math.max(2, Math.round(size * 0.1)) }}
@@ -273,6 +275,7 @@ export default function BookmarkFavicon({
       height={size}
       alt={title || url}
       decoding="async"
+      draggable={false}
       onError={() => setErrored(true)}
       className={`bookmark-favicon shrink-0 object-contain ${MORPH_OUTER} ${className}`}
       style={{ width: size, height: size }}

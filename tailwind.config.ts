@@ -1,5 +1,6 @@
 import type { Config } from 'tailwindcss';
 import animate from 'tailwindcss-animate';
+import { MOTION } from './src/lib/motion/tokens';
 
 // ============================================================
 // Tailwind config - shadcn/ui style với theme dark + vuông vức
@@ -9,6 +10,10 @@ import animate from 'tailwindcss-animate';
 // dễ thay theme runtime nếu sau này muốn light mode.
 //
 // borderRadius giữ 0 tuyệt đói — shadcn components vẫn render OK.
+//
+// Motion values (transitionDuration, transitionTimingFunction) import tu
+// src/lib/motion/tokens.ts — SSOT gop 1 cho. Doi tokens.ts → tailwind + JS
+// deu update, khong drift.
 // ============================================================
 
 export default {
@@ -99,9 +104,15 @@ export default {
         mono: ['Consolas', 'Courier New', 'monospace'],
       },
       transitionDuration: {
-        fast: '150ms',
-        normal: '200ms',
-        slow: '300ms',
+        // Derived tu MOTION.duration (SSOT: src/lib/motion/tokens.ts).
+        // Doi tokens.ts → tailwind class + JS animation cung update, khong drift.
+        fast: `${MOTION.duration.fast * 1000}ms`,
+        normal: `${MOTION.duration.normal * 1000}ms`,
+        slow: `${MOTION.duration.slow * 1000}ms`,
+      },
+      transitionTimingFunction: {
+        // Derived tu MOTION.easing.standard.
+        standard: `cubic-bezier(${MOTION.easing.standard.join(',')})`,
       },
       keyframes: {
         'accordion-down': {
@@ -153,6 +164,23 @@ export default {
           '0%': { transform: 'scale(0.96)', opacity: '0' },
           '100%': { transform: 'scale(1)', opacity: '1' },
         },
+        // Post-drop flash for bookmarks DnD — subtle ring pulse expanding
+        // outward from the just-moved item. Không tô background nên không
+        // ảnh hưởng nội dung item. Duration 400ms để cảm giác responsive.
+        'drop-flash': {
+          '0%': {
+            boxShadow: '0 0 0 0 hsl(var(--primary) / 0)',
+            transform: 'scale(1)',
+          },
+          '25%': {
+            boxShadow: '0 0 0 4px hsl(var(--primary) / 0.45)',
+            transform: 'scale(1.04)',
+          },
+          '100%': {
+            boxShadow: '0 0 0 8px hsl(var(--primary) / 0)',
+            transform: 'scale(1)',
+          },
+        },
       },
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',
@@ -167,6 +195,7 @@ export default {
         float: 'float 3s ease-in-out infinite',
         'glow-pulse': 'glow-pulse 2.4s ease-in-out infinite',
         'ring-in': 'ring-in 0.2s cubic-bezier(0.4,0,0.2,1) both',
+        'drop-flash': 'drop-flash 400ms cubic-bezier(0.2,0,0,1)',
       },
     },
   },

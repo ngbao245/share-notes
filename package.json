@@ -15,6 +15,8 @@
     "test": "vitest --run"
   },
   "dependencies": {
+    "@atlaskit/pragmatic-drag-and-drop": "^2.0.2",
+    "@atlaskit/pragmatic-drag-and-drop-hitbox": "^2.0.0",
     "@codemirror/autocomplete": "^6.18.4",
     "@codemirror/commands": "^6.8.0",
     "@codemirror/lang-json": "^6.0.1",
@@ -57,9 +59,11 @@
     "dompurify": "^3.4.11",
     "fast-xml-parser": "^4.5.1",
     "firebase": "^12.14.0",
+    "framer-motion": "13.1.0",
     "github-markdown-css": "^5.9.0",
     "html-to-image": "^1.11.11",
     "html2pdf.js": "^0.14.0",
+    "idb": "8.0.0",
     "jsonc-parser": "^3.3.1",
     "jsonpath-plus": "10.3.0",
     "jszip": "^3.10.1",

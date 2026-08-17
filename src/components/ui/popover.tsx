@@ -9,6 +9,7 @@ export const Popover = PopoverPrimitive.Root;
 export const PopoverTrigger = PopoverPrimitive.Trigger;
 export const PopoverAnchor = PopoverPrimitive.Anchor;
 export const PopoverClose = PopoverPrimitive.Close;
+export const PopoverArrow = PopoverPrimitive.Arrow;
 
 export const PopoverContent = forwardRef<
   ElementRef<typeof PopoverPrimitive.Content>,
