@@ -38,6 +38,8 @@ const Vault = lazy(() => import('./tools/vault/route'));
 const DesignSystemV2 = lazy(() => import('./routes/DesignSystemV2'));
 const PdfStudio = lazy(() => import('./tools/pdf-studio/route'));
 const ImageStudio = lazy(() => import('./tools/image-studio/route'));
+const FeedbackHub = lazy(() => import('./tools/community/route'));
+const Canvas = lazy(() => import('./tools/canvas/route'));
 // Modals - vẫn eager load vì chúng mount ở App level + cần shortcut lúc nào cũng sẵn.
 import Calculator from './tools/calculator/modal';
 import Translate from './tools/translate/modal';
@@ -163,6 +165,23 @@ export default function App() {
                   <Route path="/design-system-v2" element={<DesignSystemV2 />} />
                   <Route path="/pdf-studio" element={<PdfStudio />} />
                   <Route path="/image-studio" element={<ImageStudio />} />
+                  <Route path="/community/*" element={<FeedbackHub />} />
+                  <Route
+                    path="/canvas"
+                    element={
+                      <ToolGuard toolId="canvas">
+                        <Canvas />
+                      </ToolGuard>
+                    }
+                  />
+                  <Route
+                    path="/canvas/:boardId"
+                    element={
+                      <ToolGuard toolId="canvas">
+                        <Canvas />
+                      </ToolGuard>
+                    }
+                  />
                   {/* Legacy redirect: /setting → /config */}
                   <Route path="/setting" element={<Navigate to="/config" replace />} />
                   <Route
