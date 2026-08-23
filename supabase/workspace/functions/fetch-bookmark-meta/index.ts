@@ -16,9 +16,10 @@ import { importSPKI, jwtVerify } from 'https://deno.land/x/jose@v5.2.3/index.ts'
 const WORKSPACE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
+// Auth project ES256 public key (kid=89d316af-...)
 const PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE526+auliBc/ZCGUmtU9UvHTrInDR
-kKy5s/bvYjhOWp5HRQrp1+cdHPxUZ9WtAxuEj0FRbjtcWrBPh7quWYuq2w==
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE3DNZohvO2qXxdkvUBMLF38KYpvum
+PYMuI32xb7F86Gp9ADnkfEjf6MeFfDP01E8qd7qIU5p1CGO1q1Hu/vjmJA==
 -----END PUBLIC KEY-----`;
 
 const CORS_HEADERS = {
@@ -341,7 +342,10 @@ Deno.serve(async (req) => {
   let userId: string;
   try {
     const publicKey = await importSPKI(PUBLIC_KEY_PEM, 'ES256');
-    const { payload } = await jwtVerify(token, publicKey, { algorithms: ['ES256'] });
+    const { payload } = await jwtVerify(token, publicKey, {
+      algorithms: ['ES256'],
+      clockTolerance: '30s',
+    });
     userId = payload.sub as string;
     if (!userId) return json({ error: 'JWT missing sub claim' }, 401);
   } catch (err) {

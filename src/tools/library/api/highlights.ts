@@ -2,18 +2,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Highlight, HighlightLocation } from '@/tools/library/lib/types';
 import { dualWriteHighlight, dualDeleteHighlight } from '@/lib/rag/dual-write';
 import { useAuthStore } from '@/stores/authStore';
+import { WORKSPACE_ANON_KEY, WORKSPACE_PROXY_URL as PROXY_URL } from '@/lib/workspace/env';
 
 // ── Workspace proxy helpers ──
-
-const WORKSPACE_URL =
-  (import.meta.env.VITE_SUPABASE_WORKSPACE_URL as string | undefined) ??
-  'https://bdxgxlfjcytdnojclgor.supabase.co';
-
-const WORKSPACE_ANON_KEY =
-  (import.meta.env.VITE_SUPABASE_WORKSPACE_ANON_KEY as string | undefined) ??
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJkeGd4bGZqY3l0ZG5vamNsZ29yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0MjgxMjYsImV4cCI6MjEwMDAwNDEyNn0.L1VSo8ZYH_N_33gdcMPRJLQwFH1nYzH3IWIVESWdnXg';
-
-const PROXY_URL = `${WORKSPACE_URL}/functions/v1/workspace-proxy`;
 
 async function proxy<T = unknown>(body: Record<string, unknown>): Promise<T> {
   const token = useAuthStore.getState().session?.access_token;

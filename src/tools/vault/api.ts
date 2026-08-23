@@ -8,20 +8,11 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/stores/authStore';
+import { WORKSPACE_ANON_KEY, WORKSPACE_PROXY_URL as PROXY_URL } from '@/lib/workspace/env';
 import { useVaultStore } from './store';
 import type { VaultMetaRow, VaultEntryRow } from './types';
 
 // ── Workspace proxy helpers (vault-specific tables) ──
-
-const WORKSPACE_URL =
-  (import.meta.env.VITE_SUPABASE_WORKSPACE_URL as string | undefined) ??
-  'https://bdxgxlfjcytdnojclgor.supabase.co';
-
-const WORKSPACE_ANON_KEY =
-  (import.meta.env.VITE_SUPABASE_WORKSPACE_ANON_KEY as string | undefined) ??
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJkeGd4bGZqY3l0ZG5vamNsZ29yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0MjgxMjYsImV4cCI6MjEwMDAwNDEyNn0.L1VSo8ZYH_N_33gdcMPRJLQwFH1nYzH3IWIVESWdnXg';
-
-const PROXY_URL = `${WORKSPACE_URL}/functions/v1/workspace-proxy`;
 
 type VaultTable = 'vault_meta' | 'vault_entries';
 

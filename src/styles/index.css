@@ -395,15 +395,27 @@ input[type='number'] {
    Canvas — drag lift feedback.
    FSM sets [data-dragging="true"] trên object element khi FSM = dragging.
    Shadow rõ hơn "được nhấc lên" theo motion-rules (duration-fast + easing-standard).
+
+   IMPORTANT — set `--tw-shadow` variable (không `box-shadow` property):
+   Tailwind `shadow-md` compute box-shadow là 4-layer stack:
+     `var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow)`
+   Nếu set `box-shadow` trực tiếp → override toàn bộ stack → mất ring
+   layer khi object selected + drag. Khi drop, ring layer fade IN qua
+   transition mismatched layer count (2 → 4) → browser fill layer missing
+   bằng `0 0 0 0 transparent` → interpolation giữa 2 shadow structure
+   khác nhau → visual flick (thấy như "bóng trắng" halo quanh card).
+
+   Set `--tw-shadow` giữ nguyên 4-layer structure, chỉ đổi 2 sub-layer
+   trong --tw-shadow → interpolate clean cả IN + OUT direction.
    ============================================================ */
 [data-canvas-object-id][data-dragging='true'] {
-  box-shadow:
+  --tw-shadow:
     0 20px 40px -8px rgb(0 0 0 / 0.35),
     0 8px 16px -4px rgb(0 0 0 / 0.25);
   transition: box-shadow 60ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 [data-theme='light'] [data-canvas-object-id][data-dragging='true'] {
-  box-shadow:
+  --tw-shadow:
     0 20px 40px -8px rgb(0 0 0 / 0.18),
     0 8px 16px -4px rgb(0 0 0 / 0.12);
 }

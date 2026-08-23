@@ -1,13 +1,10 @@
-import { WORKSPACE_URL_PUBLIC } from '@/lib/workspace/supabase';
 import { useAuthStore } from '@/stores/authStore';
+import {
+  WORKSPACE_ANON_KEY,
+  WORKSPACE_FETCH_META_URL as FETCH_META_URL,
+  WORKSPACE_PUBLIC_BOOKMARKS_URL as PUBLIC_URL,
+} from '@/lib/workspace/env';
 import type { BackgroundType, BlendMode, BookmarkTheme } from '../types';
-
-const WORKSPACE_ANON_KEY =
-  (import.meta.env.VITE_SUPABASE_WORKSPACE_ANON_KEY as string | undefined) ??
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJkeGd4bGZqY3l0ZG5vamNsZ29yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0MjgxMjYsImV4cCI6MjEwMDAwNDEyNn0.L1VSo8ZYH_N_33gdcMPRJLQwFH1nYzH3IWIVESWdnXg';
-
-const FETCH_META_URL = `${WORKSPACE_URL_PUBLIC}/functions/v1/fetch-bookmark-meta`;
-const PUBLIC_URL = `${WORKSPACE_URL_PUBLIC}/functions/v1/get-public-bookmarks`;
 
 // ============================================================
 // fetch-bookmark-meta

@@ -24,15 +24,12 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { useAuthStore } from '@/stores/authStore';
 import { queryClient } from '@/lib/queryClient';
+import { WORKSPACE_URL, WORKSPACE_ANON_KEY } from './env';
 
-const WORKSPACE_URL =
-  (import.meta.env.VITE_SUPABASE_WORKSPACE_URL as string | undefined) ??
-  'https://bdxgxlfjcytdnojclgor.supabase.co';
-
-const WORKSPACE_ANON_KEY =
-  (import.meta.env.VITE_SUPABASE_WORKSPACE_ANON_KEY as string | undefined) ??
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJkeGd4bGZqY3l0ZG5vamNsZ29yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0MjgxMjYsImV4cCI6MjEwMDAwNDEyNn0.L1VSo8ZYH_N_33gdcMPRJLQwFH1nYzH3IWIVESWdnXg';
-
+/**
+ * @deprecated Import `WORKSPACE_URL` từ `@/lib/workspace/env` trực tiếp.
+ * Giữ tạm để backward compat, xoá khi không còn consumer.
+ */
 export const WORKSPACE_URL_PUBLIC = WORKSPACE_URL;
 
 // ============================================================

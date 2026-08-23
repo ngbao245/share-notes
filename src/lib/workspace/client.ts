@@ -11,28 +11,35 @@
 // ============================================================
 
 import { useAuthStore } from '@/stores/authStore';
-
-const WORKSPACE_URL =
-  (import.meta.env.VITE_SUPABASE_WORKSPACE_URL as string | undefined) ??
-  'https://bdxgxlfjcytdnojclgor.supabase.co';
-
-const WORKSPACE_ANON_KEY =
-  (import.meta.env.VITE_SUPABASE_WORKSPACE_ANON_KEY as string | undefined) ??
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJkeGd4bGZqY3l0ZG5vamNsZ29yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0MjgxMjYsImV4cCI6MjEwMDAwNDEyNn0.L1VSo8ZYH_N_33gdcMPRJLQwFH1nYzH3IWIVESWdnXg';
-
-const PROXY_URL = `${WORKSPACE_URL}/functions/v1/workspace-proxy`;
+import { WORKSPACE_ANON_KEY, WORKSPACE_PROXY_URL as PROXY_URL } from './env';
 
 // ============================================================
 // Types
 // ============================================================
 
-type AllowedTable = 'notes' | 'tasks' | 'task_lists' | 'watchlist' | 'bookmark_profiles' | 'bookmark_categories' | 'bookmarks' | 'bookmark_css_presets';
+type AllowedTable = 'notes' | 'tasks' | 'task_lists' | 'watchlist' | 'bookmark_profiles' | 'bookmark_categories' | 'bookmarks' | 'bookmark_css_presets' | 'canvas_objects' | 'canvas_boards';
+
+/**
+ * Filter value support:
+ * - primitive → eq
+ * - null → is null
+ * - operator object → { gt / gte / lt / lte / in }
+ */
+export type FilterOperator = {
+  gt?: unknown;
+  gte?: unknown;
+  lt?: unknown;
+  lte?: unknown;
+  in?: unknown[];
+};
+
+export type FilterValue = unknown | FilterOperator;
 
 interface ProxyRequest {
   table: AllowedTable;
   action: 'select' | 'insert' | 'update' | 'delete' | 'upsert';
   data?: Record<string, unknown> | Record<string, unknown>[];
-  filters?: Record<string, unknown>;
+  filters?: Record<string, FilterValue>;
   order?: { column: string; ascending?: boolean };
   limit?: number;
   single?: boolean;
@@ -79,7 +86,7 @@ async function proxyFetch<T = unknown>(body: ProxyRequest): Promise<T> {
 export async function workspaceSelect<T = unknown>(
   table: AllowedTable,
   options?: {
-    filters?: Record<string, unknown>;
+    filters?: Record<string, FilterValue>;
     order?: { column: string; ascending?: boolean };
     limit?: number;
   },
@@ -103,6 +110,24 @@ export async function workspaceInsert<T = unknown>(
     action: 'insert',
     data,
     single: true,
+  });
+}
+
+/**
+ * Batch INSERT — nhiều rows 1 request. Dùng cho migration + bulk import.
+ * Chunk client-side (VD 50 rows/req) để tránh workspace-proxy timeout 30s
+ * hoặc rate limit.
+ */
+export async function workspaceInsertBatch<T = unknown>(
+  table: AllowedTable,
+  rows: Record<string, unknown>[],
+): Promise<T[]> {
+  if (rows.length === 0) return [];
+  return proxyFetch<T[]>({
+    table,
+    action: 'insert',
+    data: rows,
+    single: false,
   });
 }
 

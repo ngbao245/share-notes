@@ -22,6 +22,7 @@ import {
   Library,
   FolderLock,
   Bookmark,
+  Frame,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -57,6 +58,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   'json-studio': Network,
   audio: Music,
   library: Library,
+  canvas: Frame,
 };
 
 interface ToolIconProps {

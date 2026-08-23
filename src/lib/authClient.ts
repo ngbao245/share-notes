@@ -21,8 +21,14 @@ if (!AUTH_URL || !AUTH_ANON_KEY) {
   );
 }
 
-// Fallback string để createClient không throw ở boot khi env chưa set.
-// Runtime call sẽ fail rõ ràng.
+// Soft-fail intentional: authClient là bootstrap của login flow.
+// Nếu throw ở module load, Login.tsx không load nổi để show
+// "chưa config" UI qua isAuthConfigured() → crash trắng màn hình.
+// Runtime call sẽ fail rõ ràng với URL 'invalid.supabase.co'.
+//
+// Contrast: src/lib/workspace/env.ts dùng hard-throw vì consumer
+// (bookmark/vault/library) chỉ chạy sau login — env missing = dev
+// config error, throw sớm ở boot là đúng.
 export const authClient: SupabaseClient = createClient(
   AUTH_URL || 'https://invalid.supabase.co',
   AUTH_ANON_KEY || 'invalid',

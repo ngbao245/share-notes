@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Canvas — Roadmap</title>
+<style>
+  :root {
+    --bg: #0b0b0d;
+    --surface: #141418;
+    --surface-hover: #1a1a1f;
+    --border: #26262c;
+    --line: #22222a;
+    --text: #e8e8ea;
+    --text-muted: #8b8b93;
+    --text-dim: #55555c;
+    --accent: #7fd67f;
+    --accent-dim: rgba(127, 214, 127, 0.14);
+    --warning: #d6b47f;
+    --warning-dim: rgba(214, 180, 127, 0.14);
+    --done: #4a4a52;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.55;
+    padding: 48px 24px;
+  }
+  .container { max-width: 880px; margin: 0 auto; }
+
+  header {
+    margin-bottom: 40px;
+    padding-bottom: 28px;
+    border-bottom: 1px solid var(--border);
+  }
+  h1 {
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-bottom: 6px;
+  }
+  header p {
+    color: var(--text-muted);
+    max-width: 640px;
+  }
+  .meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 8px;
+    margin-top: 20px;
+  }
+  .meta {
+    padding: 10px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .meta .k {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 2px;
+  }
+  .meta .v { font-size: 13px; font-weight: 500; }
+
+  .legend {
+    display: flex;
+    gap: 18px;
+    margin-top: 20px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot {
+    display: inline-block;
+    width: 9px; height: 9px;
+    border-radius: 50%;
+  }
+  .dot.done { background: var(--done); }
+  .dot.active { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+  .dot.next { background: var(--warning); }
+  .dot.planned { background: transparent; border: 1.5px solid var(--done); }
+
+  .timeline { position: relative; padding-left: 26px; }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 6px; top: 12px; bottom: 12px;
+    width: 1px;
+    background: var(--line);
+  }
+
+  .phase {
+    position: relative;
+    padding: 18px 22px;
+    margin-bottom: 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .phase::before {
+    content: '';
+    position: absolute;
+    left: -24px; top: 22px;
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    background: var(--surface);
+    border: 1.5px solid var(--done);
+  }
+  .phase[data-status="done"]::before {
+    background: var(--done);
+    border-color: var(--done);
+  }
+  .phase[data-status="active"]::before {
+    background: var(--accent);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-dim);
+  }
+  .phase[data-status="next"]::before {
+    background: var(--warning);
+    border-color: var(--warning);
+  }
+
+  .phase-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .phase-title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+  .phase-num { color: var(--text-dim); margin-right: 8px; font-weight: 500; }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 9px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border-radius: 4px;
+  }
+  .badge.done { background: var(--done); color: var(--text); }
+  .badge.active { background: var(--accent-dim); color: var(--accent); }
+  .badge.next { background: var(--warning-dim); color: var(--warning); }
+  .badge.planned {
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+
+  .phase-desc {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin-bottom: 10px;
+  }
+
+  .items { list-style: none; padding: 0; }
+  .items li {
+    position: relative;
+    padding: 2px 0 2px 14px;
+    font-size: 13px;
+  }
+  .items li::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 11px;
+    width: 6px; height: 1px;
+    background: var(--text-dim);
+  }
+
+  .verify {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--line);
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .verify strong { color: var(--text); font-weight: 500; }
+
+  .risk-block {
+    margin-top: 40px;
+    padding: 20px 22px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .risk-block h2 {
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 12px;
+    color: var(--text-muted);
+  }
+  .risk-item {
+    padding: 10px 0;
+    border-bottom: 1px dashed var(--line);
+    font-size: 13px;
+  }
+  .risk-item:last-child { border: none; padding-bottom: 0; }
+  .risk-item strong { color: var(--warning); font-weight: 500; }
+
+  footer {
+    margin-top: 40px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 12px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>Canvas — Roadmap</h1>
+  <p>Milanote-style infinite canvas cho Hubibo. Xây tăng dần qua 6 phase, mỗi phase có deliverable rõ và verify criteria riêng.</p>
+
+  <div class="meta-grid">
+    <div class="meta"><div class="k">Tool ID</div><div class="v">canvas</div></div>
+    <div class="meta"><div class="k">Route</div><div class="v">/canvas</div></div>
+    <div class="meta"><div class="k">Group</div><div class="v">Productivity</div></div>
+    <div class="meta"><div class="k">Storage P1-4</div><div class="v">IndexedDB</div></div>
+    <div class="meta"><div class="k">Storage P5+</div><div class="v">Supabase workspace</div></div>
+    <div class="meta"><div class="k">Reference</div><div class="v">Isogrid clone</div></div>
+  </div>
+
+  <div class="legend">
+    <span><i class="dot done"></i> Done</span>
+    <span><i class="dot active"></i> In progress</span>
+    <span><i class="dot next"></i> Next up</span>
+    <span><i class="dot planned"></i> Planned</span>
+  </div>
+</header>
+
+<div class="timeline">
+
+  <div class="phase" data-status="done">
+    <div class="phase-head">
+      <div class="phase-title"><span class="phase-num">P0</span>Architecture audit</div>
+      <span class="badge done">Done</span>
+    </div>
+    <div class="phase-desc">Đọc Isogrid clone, so với Hubibo, chốt boundary. Không code.</div>
+    <ul class="items">
+      <li>Isogrid analysis: KEEP / ADAPT / REMOVE / REBUILD</li>
+      <li>Chốt kiến trúc Canvas plugin: engine + FSM + Command bus + Repository</li>
+      <li>Chốt scope 6 phase</li>
+    </ul>
+  </div>
+
+  <div class="phase" data-status="done">
+    <div class="phase-head">
+      <div class="phase-title"><span class="phase-num">P1</span>Isolated canvas engine</div>
+      <span class="badge done">Done</span>
+    </div>
+    <div class="phase-desc">Foundation: infinite canvas + camera + FSM + drag/resize/select. Chỉ 1 object type debug (rect). Chưa có content.</div>
+    <ul class="items">
+      <li>Spec <code>.kiro/specs/canvas/</code> + folder <code>src/tools/canvas/</code></li>
+      <li>Coordinate system: screenToCanvas / canvasToScreen</li>
+      <li>Camera store: pan + zoom around pointer (0.1–8x)</li>
+      <li>Interaction FSM: IDLE / DRAG_PENDING / DRAGGING / RESIZING / MARQUEE / PANNING</li>
+      <li>Selection store: single + shift-add + marquee AABB (canvas-space)</li>
+      <li>Grid render (dots) qua CSS gradient</li>
+      <li>Object type "rect" (debug): drag + resize 8 handle + delete</li>
+      <li>Command bus: Create / Move / Resize / Delete + undo/redo</li>
+      <li>IndexedDB repository (idb wrapper)</li>
+      <li>Register <code>core.tools</code> entry, ToolGuard</li>
+      <li>Route mount, Hub tile</li>
+    </ul>
+    <div class="verify"><strong>Verify:</strong> 500 rect drag ổn định 60fps trên laptop. Zero React re-render ngoài frame commit.</div>
+  </div>
+
+  <div class="phase" data-status="done">
+    <div class="phase-head">
+      <div class="phase-title"><span class="phase-num">P2</span>Content objects (MVP)</div>
+      <span class="badge done">Done</span>
+    </div>
+    <div class="phase-desc">4 object type thật. Object registry pattern để dễ thêm sau.</div>
+    <ul class="items">
+      <li>Object registry (register type → renderer + defaults)</li>
+      <li>Text object (plain, size + align)</li>
+      <li>Note object (plain textarea tạm, chờ RichEditor upgrade)</li>
+      <li>Image object (paste + upload → IndexedDB blob cache)</li>
+      <li>Link object (URL + favicon fetch)</li>
+      <li>Context menu tạo object (shadcn ContextMenu)</li>
+      <li>Copy / paste image từ clipboard</li>
+    </ul>
+    <div class="verify"><strong>Verify:</strong> tạo/edit/delete cả 4 type, refresh persist. Paste ảnh từ clipboard vào canvas.</div>
+  </div>
+
+  <div class="phase" data-status="done">
+    <div class="phase-head">
+      <div class="phase-title"><span class="phase-num">P3</span>Editing polish + Todo</div>
+      <span class="badge done">Done</span>
+    </div>
+    <div class="phase-desc">Interaction chuẩn Milanote/Figma. Thêm todo (complex vì nested drag).</div>
+    <ul class="items">
+      <li>Todo object với checkbox items</li>
+      <li>Duplicate object (Ctrl+D)</li>
+      <li>Copy / paste object (Ctrl+C/V)</li>
+      <li>Keyboard nudge (arrows 1px, Shift+arrows 10px)</li>
+      <li>Multi-object move</li>
+      <li>Delete confirm khi > 1 object</li>
+      <li>Undo merge consecutive moves same object</li>
+      <li>Fit selection / reset view</li>
+    </ul>
+    <div class="verify"><strong>Verify:</strong> multi-select drag 20 object cùng lúc, keyboard nudge, undo 10 steps back.</div>
+  </div>
+
+  <div class="phase" data-status="done">
+    <div class="phase-head">
+      <div class="phase-title"><span class="phase-num">P4A</span>Nested boards</div>
+      <span class="badge done">Done</span>
+    </div>
+    <div class="phase-desc">Milanote-style board lồng board, camera per-board, deep link URL.</div>
+    <ul class="items">
+      <li>Board object (double-click enter → breadcrumb)</li>
+      <li>Camera state per-board</li>
+      <li>Move-to-board dialog</li>
+      <li>URL routing <code>/canvas/:boardId</code> deep link</li>
+      <li>Cascade delete với confirm</li>
+    </ul>
+    <div class="verify"><strong>Verify:</strong> nested board work, breadcrumb navigate, camera persist per board.</div>
+  </div>
+
+  <div class="phase" data-status="done">
+    <div class="phase-head">
+      <div class="phase-title"><span class="phase-num">P4B</span>Groups + Snap + Alignment + Drag-into-board</div>
+      <span class="badge done">Done</span>
+    </div>
+    <div class="phase-desc">Milanote-style spatial organization: group logical, snap-to-grid sync với visible grid, alignment guides subtle, direct drag object → board.</div>
+    <ul class="items">
+      <li>Group object (invisible logical container) — Ctrl+G / Ctrl+Shift+G</li>
+      <li>Snap-to-grid toggle (toolbar magnet + Ctrl+;)</li>
+      <li>Snap = visible grid spacing (20px sync)</li>
+      <li>Alignment guides — edges + centers (Figma-style subtle)</li>
+      <li>Drag object into board với hover feedback</li>
+      <li>Multi-select drag-into-board (single undo entry)</li>
+      <li>Nested board drop + circular hierarchy validation</li>
+      <li>Interaction priority: Board > Alignment > Snap > Free</li>
+    </ul>
+    <div class="verify"><strong>Verify:</strong> Ctrl+G group, drag group children move cùng; snap ON drop position multiple of 20; alignment guide hiện khi gần cạnh; drag object hover board → highlight → drop nested.</div>
+  </div>
+
+  <div class="phase" data-status="done">
+    <div class="phase-head">
+      <div class="phase-title"><span class="phase-num">P5a</span>Data foundation (Supabase remote)</div>
+      <span class="badge done">Done</span>
+    </div>
+    <div class="phase-desc">Migrate IndexedDB → Supabase workspace. Feature flag toggle, realtime + poll fallback, optimistic queue với coalesce.</div>
+    <ul class="items">
+      <li>Supabase schema canvas_objects + canvas_boards + storage bucket canvas-images</li>
+      <li>SupabaseCanvasRepository + workspace-proxy allowlist</li>
+      <li>Feature flag VITE_CANVAS_REMOTE (build-time toggle)</li>
+      <li>Migration flow: first-login dialog + progress + resume/rollback (idempotent, resume-safe)</li>
+      <li>Realtime channel per-user + LWW conflict resolution</li>
+      <li>Poll fallback 15s khi realtime disconnect > 30s + full resync on reconnect</li>
+      <li>Optimistic commit queue với retry 3 lần backoff + toast Retry</li>
+      <li>Coalesce theo key + debounce (Milanote pattern): text 800ms, move/resize 500ms</li>
+      <li>Root board redesign: loadRootBoard() semantic parentId=null (thay fixed 'default' string)</li>
+    </ul>
+    <div class="verify"><strong>Verify:</strong> flag toggle work, migration first-login dialog + progress, 2 tab realtime sync ≤ 2s, LWW conflict toast, drag/edit 60fps responsive không chờ network.</div>
+  </div>
+
+  <div class="phase" data-status="next">
+    <div class="phase-head">
+      <div class="phase-title"><span class="phase-num">P5b</span>Integration UX (ref objects)</div>
+      <span class="badge next">Next</span>
+    </div>
+    <div class="phase-desc">Canvas thành visual command center — 4 ref object type + Add-to-Canvas entry point từ 4 source tool.</div>
+    <ul class="items">
+      <li>Bookmark-ref object → click mở Bookmark item</li>
+      <li>PDF-ref object → click mở PDF Studio</li>
+      <li>Note-ref object → click mở Notes tool</li>
+      <li>Todo-ref object → link Tasks</li>
+      <li>Cached metadata + refresh event-driven (BroadcastChannel) + stale timer 24h</li>
+      <li>Source-deleted state (không auto-remove, prompt on click)</li>
+      <li>"Add to canvas" context menu single + toolbar multi từ 4 tool</li>
+      <li>Board picker dialog với global last-used memory</li>
+      <li>Click behavior: navigate + Ctrl/Cmd+click new tab</li>
+    </ul>
+    <div class="verify"><strong>Verify:</strong> tạo bookmark-ref, click mở đúng bookmark; edit bookmark tab khác → ref update; source delete → ref [deleted] state.</div>
+  </div>
+
+  <div class="phase" data-status="planned">
+    <div class="phase-head">
+      <div class="phase-title"><span class="phase-num">P6</span>Visual thinking</div>
+      <span class="badge planned">Planned</span>
+    </div>
+    <div class="phase-desc">Layer trên cùng: connectors + advanced visualization.</div>
+    <ul class="items">
+      <li>Arrows / connectors với anchor point trên object</li>
+      <li>Auto-reroute connector khi object move</li>
+      <li>Minimap</li>
+      <li>Object rotation</li>
+      <li>Embed widget (Hubibo plugin render trong canvas)</li>
+      <li>Frame export → image</li>
+    </ul>
+    <div class="verify"><strong>Verify:</strong> vẽ 20 arrow giữa 20 object, drag object → arrow reroute smooth.</div>
+  </div>
+
+</div>
+
+<div class="risk-block">
+  <h2>Risks &amp; open questions</h2>
+
+  <div class="risk-item">
+    <strong>Performance</strong> — Nếu P1 fps &lt; 60 ở 500 object với plain DOM, xét OffscreenCanvas hoặc @pixi/react cho object layer. Quyết sau khi có benchmark P1.
+  </div>
+
+  <div class="risk-item">
+    <strong>Rich note editor</strong> — Notes RichEditor hiện tại không đủ tốt. Note object P2 tạm dùng plain textarea. Swap sang rich khi bạn upgrade editor xong (P5 hoặc sớm hơn).
+  </div>
+
+  <div class="risk-item">
+    <strong>IndexedDB → Supabase migration</strong> — Schema có thể lệch giữa 2 layer. Repository interface abstract từ P1, migration script tự viết P5. Blob image cần re-upload lên storage bucket.
+  </div>
+
+  <div class="risk-item">
+    <strong>FSM edge cases</strong> — Right-click drag pan, Ctrl+click deselect, marquee + shift add, resize khi multi-select. Design cần state chart chi tiết trước Task 1 của P1.
+  </div>
+
+  <div class="risk-item">
+    <strong>Zoom range 0.1–8x</strong> — Rộng hơn Isogrid (0.5–3x). Cần test scale-down font readability + hit-test buffer khi zoom out sâu.
+  </div>
+</div>
+
+<footer>
+  Version: 2026-08-17 &middot; Phase 1-4B + P5a done &rarr; chuẩn bị vào P5b (ref objects + Add-to-Canvas)
+</footer>
+
+</div>
+</body>
+</html>
